@@ -5,13 +5,13 @@ import requests
 import json
 
 def test_api_endpoint():
-    """Prueba el endpoint de parques"""
+    """Prueba el endpoint de unidades de proyecto"""
     
     print("\n" + "="*70)
     print("  🧪 TEST DE CONECTIVIDAD CON API RAILWAY")
     print("="*70 + "\n")
     
-    url = "https://web-production-2d737.up.railway.app/init/parques"
+    url = "https://web-production-2d737.up.railway.app/init/unidades-proyecto"
     
     print(f"🌐 URL: {url}")
     print(f"📡 Método: GET\n")
@@ -40,22 +40,34 @@ def test_api_endpoint():
         if response.status_code == 200:
             data = response.json()
             print(f"\n✅ Respuesta JSON válida:")
-            print(f"  • Success: {data.get('success')}")
-            print(f"  • Count: {data.get('count')}")
-            print(f"  • Data items: {len(data.get('data', []))}")
-            print(f"  • Timestamp: {data.get('timestamp')}")
-            
-            if data.get('data'):
-                print(f"\n📦 Primer parque (ejemplo):")
-                first_park = data['data'][0]
-                print(f"  • ID: {first_park.get('id', 'N/A')}")
-                # Mostrar algunas propiedades del primer parque
-                for key in list(first_park.keys())[:5]:
-                    value = first_park[key]
-                    if isinstance(value, str) and len(str(value)) > 50:
-                        print(f"  • {key}: {str(value)[:50]}...")
+            print(f"  • Tipo: {type(data).__name__}")
+
+            if isinstance(data, list):
+                print(f"  • Items: {len(data)}")
+                if data:
+                    first_item = data[0]
+                    print(f"\n📦 Primer item (ejemplo):")
+                    if isinstance(first_item, dict):
+                        for key in list(first_item.keys())[:5]:
+                            value = first_item[key]
+                            if isinstance(value, str) and len(str(value)) > 50:
+                                print(f"  • {key}: {str(value)[:50]}...")
+                            else:
+                                print(f"  • {key}: {value}")
                     else:
-                        print(f"  • {key}: {value}")
+                        print(f"  • Valor: {first_item}")
+            elif isinstance(data, dict):
+                print(f"  • Keys: {len(data.keys())}")
+                if data:
+                    print(f"\n📦 Primeras claves (ejemplo):")
+                    for key in list(data.keys())[:5]:
+                        value = data[key]
+                        if isinstance(value, str) and len(str(value)) > 50:
+                            print(f"  • {key}: {str(value)[:50]}...")
+                        else:
+                            print(f"  • {key}: {value}")
+            else:
+                print(f"  • Valor: {data}")
             
             print("\n" + "="*70)
             print("  ✅ API FUNCIONANDO CORRECTAMENTE")
@@ -88,7 +100,7 @@ def test_cors_preflight():
     print("  🔍 TEST DE CORS PREFLIGHT (OPTIONS)")
     print("="*70 + "\n")
     
-    url = "https://web-production-2d737.up.railway.app/init/parques"
+    url = "https://web-production-2d737.up.railway.app/init/unidades-proyecto"
     
     headers = {
         'Origin': 'http://localhost:5174',

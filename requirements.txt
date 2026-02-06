@@ -19,3 +19,4 @@ slowapi==0.1.9
 
 # Utilidades
 python-dotenv==1.0.0
+httpx==0.27.0

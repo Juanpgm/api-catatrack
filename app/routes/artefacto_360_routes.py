@@ -10,13 +10,14 @@ import math
 import os
 import io
 from pydantic import BaseModel, Field
+import httpx
 
 # Importar configuración de Firebase y S3/Storage
 from app.firebase_config import db
 import boto3
 from botocore.exceptions import ClientError
 
-router = APIRouter(tags=["Artefacto de Captura DAGMA"])
+router = APIRouter(tags=["Artefacto de Captura"])
 
 
 # ==================== FUNCIONES AUXILIARES ====================#
@@ -123,55 +124,44 @@ class ReconocimientoResponse(BaseModel):
     timestamp: str
 
 
-# ==================== ENDPOINT 1: Inicialización de Parques ====================#
-@router.get(
-    "/init/parques",
-    summary="🔵 GET | Inicialización de Parques",
-    description="""
-## 🔵 GET | Inicialización de Parques para DAGMA
+# ==================== ENDPOINT 1: Inicialización de Unidades de Proyecto ====================#
+GESTORPROYECTO_API_BASE = "https://gestorproyectoapi-production.up.railway.app"
 
-**Propósito**: Obtener datos iniciales de parques para el artefacto de captura DAGMA.
+
+@router.get(
+    "/init/unidades-proyecto",
+    summary="🔵 GET | Inicialización de Unidades de Proyecto",
+    description="""
+## 🔵 GET | Inicialización de Unidades de Proyecto
+
+**Propósito**: Obtener datos iniciales de unidades de proyecto para el artefacto de captura.
 
 ### ✅ Respuesta
-Retorna información de parques y zonas verdes del sistema.
+Retorna la respuesta original de la API de GestorProyecto.
 
 ### 📝 Ejemplo de uso:
 ```javascript
-const response = await fetch('/init/parques');
+const response = await fetch('/init/unidades-proyecto');
 const data = await response.json();
 ```
     """,
 )
-async def get_init_parques():
+async def get_init_unidades_proyecto():
     """
-    Obtener datos iniciales de parques para DAGMA
+    Obtener datos iniciales de unidades de proyecto
     """
     try:
-        # Obtener datos de la colección 'parques' en Firebase
-        parques_ref = db.collection('parques')
-        docs = parques_ref.stream()
-        
-        # Convertir los documentos a lista de diccionarios
-        parques = []
-        for doc in docs:
-            parque_data = doc.to_dict()
-            parque_data['id'] = doc.id  # Agregar el ID del documento
-            
-            # Limpiar valores NaN e infinitos
-            parque_data = clean_nan_values(parque_data)
-            
-            parques.append(parque_data)
-        
-        return {
-            "success": True,
-            "data": parques,
-            "count": len(parques),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{GESTORPROYECTO_API_BASE}/unidades-proyecto/geometry"
+            )
+            response.raise_for_status()
+
+        return response.json()
+    except httpx.HTTPError as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Error obteniendo parques: {str(e)}"
+            status_code=502,
+            detail=f"Error consultando unidades de proyecto: {str(e)}"
         )
 
 

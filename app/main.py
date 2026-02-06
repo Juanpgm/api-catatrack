@@ -1,6 +1,5 @@
 """
-API Artefacto 360 DAGMA - Main Application
-Configuración basada en gestor_proyecto_api
+API Task Tracker - Main Application
 """
 import logging
 from fastapi import FastAPI
@@ -37,8 +36,8 @@ from app.routes import (
 
 # Crear aplicación FastAPI
 app = FastAPI(
-    title="API Artefacto 360 DAGMA",
-    description="API para gestión de artefacto de captura 360 con Firebase/Firestore - Soporte completo UTF-8 🇪🇸",
+    title="API Task Tracker",
+    description="API para gestión de tareas con Firebase/Firestore - Soporte completo UTF-8 🇪🇸",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -57,15 +56,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         # Desarrollo local
-        "http://localhost:3000",      # React default
-        "http://localhost:3001",      # React alternate
+        "http://localhost:3000",      # React default     # React alternate
         "http://localhost:5173",      # Vite default
-        "http://localhost:5174",      # Vite alternate
-        "http://localhost:5175",      # Vite alternate
         # Producción
         "https://web-production-2d737.up.railway.app",  # Railway API
-        "https://dagma-360-capture-frontend.vercel.app",  # Frontend Vercel
-        "https://tu-dominio-produccion.com"  # Dominio custom adicional
+
     ],
     allow_credentials=True,
     allow_methods=["*"],
