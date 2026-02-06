@@ -113,14 +113,73 @@ def get_s3_client():
 
 
 # ==================== MODELOS ====================#
-class ReconocimientoResponse(BaseModel):
-    """Modelo de respuesta para reconocimientos"""
+class RegistroVisitaResponse(BaseModel):
+    """Modelo de respuesta para registro de visitas"""
     success: bool
-    id: Optional[str] = None
+    vid: str
     message: str
-    coordinates: Optional[dict] = None
-    photosUrl: Optional[List[str]] = None
-    photos_uploaded: Optional[int] = None
+    nombre_up: str
+    nombre_up_detalle: str
+    barrio_vereda: str
+    comuna_corregimiento: str
+    fecha_visita: str
+    timestamp: str
+
+
+class RegistroDelegadoResponse(BaseModel):
+    """Modelo de respuesta para registro de asistencia de delegado"""
+    success: bool
+    vid: str
+    id_acompañante: str
+    message: str
+    nombre_completo: str
+    rol: str
+    nombre_centro_gestor: str
+    telefono: str
+    email: str
+    coords: dict
+    fecha_registro: str
+    timestamp: str
+
+
+class RegistroComunidadResponse(BaseModel):
+    """Modelo de respuesta para registro de asistencia de comunidad"""
+    success: bool
+    vid: str
+    id_asistente_comunidad: str
+    message: str
+    nombre_completo: str
+    rol_comunidad: str
+    direccion: str
+    barrio_vereda: str
+    comuna_corregimiento: str
+    telefono: str
+    email: str
+    coords: dict
+    fecha_registro: str
+    timestamp: str
+
+
+class RegistroRequerimientoResponse(BaseModel):
+    """Modelo de respuesta para registro de requerimiento"""
+    success: bool
+    vid: str
+    rid: str
+    message: str
+    centro_gestor_solicitante: str
+    solicitante_contacto: str
+    requerimiento: str
+    observaciones: str
+    direccion: str
+    barrio_vereda: str
+    comuna_corregimiento: str
+    coords: dict
+    estado: str
+    nota_voz_url: Optional[str]
+    telefono: str
+    email_solicitante: str
+    fecha_registro: str
+    organismos_encargados: List[str]
     timestamp: str
 
 
@@ -165,55 +224,37 @@ async def get_init_unidades_proyecto():
         )
 
 
-# ==================== ENDPOINT 2: Registrar Reconocimiento ====================#
+# ==================== ENDPOINT 2: Registro de Visita ====================
 @router.post(
-    "/grupo-operativo/reconocimiento",
-    summary="🟢 POST | Registrar Reconocimiento",
+    "/registrar-visita/",
+    summary="🟢 POST | Registro de Visita",
     description="""
-## 🟢 POST | Registrar Reconocimiento del Grupo Operativo DAGMA
+## 🟢 POST | Registro de Visita
 
-**Propósito**: Registrar un reconocimiento realizado por el grupo operativo DAGMA,
-incluyendo captura de coordenadas GPS y subida de fotos a Amazon S3.
+**Propósito**: Registrar una visita realizada con información de la unidad de proyecto,
+detalles de ubicación y fecha de la visita.
 
 ### ✅ Campos requeridos:
-- **tipo_intervencion**: Tipo de intervención realizada
-- **descripcion_intervencion**: Descripción detallada de la intervención
-- **direccion**: Dirección del lugar intervenido
-- **observaciones**: Observaciones adicionales (opcional)
-- **coordinates_type**: Tipo de geometría (Point, LineString, Polygon)
-- **coordinates_data**: Coordenadas GPS en formato JSON array
-- **photos**: Archivos de fotos (multipart/form-data)
+- **nombre_up**: Nombre de la unidad de proyecto (texto)
+- **nombre_up_detalle**: Detalle del nombre de la unidad de proyecto (texto)
+- **barrio_vereda**: Nombre del barrio o vereda (texto)
+- **comuna_corregimiento**: Comuna o corregimiento (texto)
+- **fecha_visita**: Fecha de la visita en formato timestamp (número)
 
-### 📸 Almacenamiento de Fotos:
-Las fotos se subirán al bucket **360-dagma-photos** en Amazon S3 con la siguiente estructura:
-```
-360-dagma-photos/
-└── reconocimientos/
-    └── {id_reconocimiento}/
-        └── {timestamp}_{filename}
-```
-
-### 📍 Coordenadas GPS:
-Basado en la lógica del endpoint `/unidades-proyecto/captura-estado-360`:
-- Se capturan las coordenadas del dispositivo GPS
-- Formato JSON: `[-76.5225, 3.4516]` para Point
-- Soporta diferentes tipos de geometría
+### 🔢 VID (ID de Visita):
+El sistema genera automáticamente un ID único con formato **VID-#** donde # es un 
+consecutivo incremental. Ejemplo: VID-1, VID-2, VID-3...
 
 ### 📝 Ejemplo de uso con FormData:
 ```javascript
 const formData = new FormData();
-formData.append('tipo_intervencion', 'Mantenimiento');
-formData.append('descripcion_intervencion', 'Poda de árboles');
-formData.append('direccion', 'Calle 5 #10-20');
-formData.append('observaciones', 'Trabajo completado satisfactoriamente');
-formData.append('coordinates_type', 'Point');
-formData.append('coordinates_data', '[-76.5225, 3.4516]');
+formData.append('nombre_up', 'Unidad Centro');
+formData.append('nombre_up_detalle', 'Zona Centro - Área 1');
+formData.append('barrio_vereda', 'San Fernando');
+formData.append('comuna_corregimiento', 'Comuna 3');
+formData.append('fecha_visita', Date.now().toString());
 
-// Agregar fotos
-formData.append('photos', file1);
-formData.append('photos', file2);
-
-const response = await fetch('/grupo-operativo/reconocimiento', {
+const response = await fetch('/registrar-visita/', {
     method: 'POST',
     body: formData
 });
@@ -223,189 +264,101 @@ const response = await fetch('/grupo-operativo/reconocimiento', {
 ```json
 {
     "success": true,
-    "id": "uuid-generado",
-    "message": "Reconocimiento registrado exitosamente",
-    "coordinates": {
-        "type": "Point",
-        "coordinates": [-76.5225, 3.4516]
-    },
-    "photosUrl": [
-        "https://360-dagma-photos.s3.amazonaws.com/reconocimientos/uuid/foto1.jpg",
-        "https://360-dagma-photos.s3.amazonaws.com/reconocimientos/uuid/foto2.jpg"
-    ],
-    "photos_uploaded": 2,
-    "timestamp": "2026-01-24T10:30:00Z"
+    "vid": "VID-1",
+    "message": "Visita registrada exitosamente",
+    "nombre_up": "Unidad Centro",
+    "nombre_up_detalle": "Zona Centro - Área 1",
+    "barrio_vereda": "San Fernando",
+    "comuna_corregimiento": "Comuna 3",
+    "fecha_visita": "2026-02-06T10:30:00Z",
+    "timestamp": "2026-02-06T10:30:00Z"
 }
 ```
     """,
-    response_model=ReconocimientoResponse
+    response_model=RegistroVisitaResponse
 )
-async def post_reconocimiento(
-    tipo_intervencion: str = Form(..., min_length=1, description="Tipo de intervención"),
-    descripcion_intervencion: str = Form(..., min_length=1, description="Descripción de la intervención"),
-    direccion: str = Form(..., min_length=1, description="Dirección del lugar"),
-    coordinates_type: str = Form(..., min_length=1, description="Tipo de geometría (Point, LineString, Polygon, etc.)"),
-    coordinates_data: str = Form(..., description="Coordenadas en formato JSON array. Ejemplo: [-76.5225, 3.4516]"),
-    photos: List[UploadFile] = File(..., description="Lista de archivos de fotos a subir a S3"),
-    observaciones: Optional[str] = Form(None, description="Observaciones adicionales (opcional)")
+async def post_registro_visita(
+    nombre_up: str = Form(..., min_length=1, description="Nombre de la unidad de proyecto"),
+    nombre_up_detalle: str = Form(..., min_length=1, description="Detalle del nombre de la unidad de proyecto"),
+    barrio_vereda: str = Form(..., min_length=1, description="Nombre del barrio o vereda"),
+    comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
+    fecha_visita: str = Form(..., description="Fecha de la visita en formato timestamp")
 ):
     """
-    Registrar un reconocimiento del grupo operativo DAGMA
+    Registrar una visita con información de la unidad de proyecto
     """
     try:
-        # Validar tipo de geometría
-        valid_geometry_types = ["Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon"]
-        if coordinates_type not in valid_geometry_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Tipo de geometría inválido. Permitidos: {', '.join(valid_geometry_types)}"
-            )
-        
-        # Validar cantidad de fotos
-        if not photos or len(photos) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Debe proporcionar al menos una foto"
-            )
-        
-        if len(photos) > 10:
-            raise HTTPException(
-                status_code=400,
-                detail="Máximo 10 fotos por reconocimiento"
-            )
-        
-        # Validar cada foto
-        for photo in photos:
-            try:
-                validate_photo_file(photo)
-            except ValueError as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Error en archivo '{photo.filename}': {str(e)}"
-                )
-        
-        # Generar ID único para el reconocimiento
-        reconocimiento_id = str(uuid.uuid4())
-        
-        # Parsear y validar coordenadas
+        # Validar y convertir fecha_visita (timestamp)
         try:
-            coordinates = json.loads(coordinates_data)
-            validate_coordinates(coordinates, coordinates_type)
-        except json.JSONDecodeError:
+            # Intentar convertir el timestamp a datetime
+            timestamp_int = int(fecha_visita)
+            # Si es timestamp en milisegundos, convertir a segundos
+            if timestamp_int > 10000000000:
+                timestamp_int = timestamp_int // 1000
+            fecha_visita_dt = datetime.fromtimestamp(timestamp_int)
+        except (ValueError, TypeError) as e:
             raise HTTPException(
                 status_code=400,
-                detail="Formato de coordenadas inválido. Debe ser un JSON array válido"
-            )
-        except ValueError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Error en coordenadas: {str(e)}"
+                detail=f"Formato de fecha_visita inválido. Debe ser un timestamp válido: {str(e)}"
             )
         
-        # Crear objeto de geometría
-        geometry = {
-            "type": coordinates_type,
-            "coordinates": coordinates
-        }
-        
-        # Obtener cliente S3 y bucket name
-        bucket_name = os.getenv('S3_BUCKET_NAME', '360-dagma-photos')
-        
-        # Subir fotos a S3
-        photos_urls = []
-        s3_client = None
-        
+        # Generar VID con consecutivo incremental
         try:
-            s3_client = get_s3_client()
-        except ValueError as e:
-            # Si no hay credenciales de S3, advertir pero continuar (modo desarrollo)
-            print(f"⚠️ ADVERTENCIA: {str(e)}. Las fotos NO se subirán a S3.")
-        
-        for i, photo in enumerate(photos):
-            # Generar nombre único para la foto
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            # Sanitizar el nombre del archivo
-            safe_filename = "".join(c for c in photo.filename if c.isalnum() or c in "._-")
-            photo_filename = f"{timestamp}_{i}_{safe_filename}"
+            # Obtener el último VID de la colección
+            visitas_ref = db.collection('visitas_dagma')
+            # Ordenar por VID descendente y obtener el primero
+            last_visita = visitas_ref.order_by('vid_number', direction='DESCENDING').limit(1).get()
             
-            s3_key = f"reconocimientos/{reconocimiento_id}/{photo_filename}"
-            
-            if s3_client:
-                try:
-                    # Leer el contenido del archivo
-                    photo_content = await photo.read()
-                    
-                    # Subir a S3
-                    # Nota: No se usa ACL porque muchos buckets modernos tienen ACLs deshabilitadas
-                    # La accesibilidad pública se configura mediante Bucket Policy en AWS Console
-                    s3_client.upload_fileobj(
-                        io.BytesIO(photo_content),
-                        bucket_name,
-                        s3_key,
-                        ExtraArgs={
-                            'ContentType': photo.content_type
-                        }
-                    )
-                    
-                    # Generar URL pública
-                    photo_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
-                    photos_urls.append(photo_url)
-                    
-                    # Rebobinar el archivo para futuras lecturas si es necesario
-                    await photo.seek(0)
-                    
-                except ClientError as e:
-                    print(f"❌ Error subiendo foto a S3: {str(e)}")
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Error subiendo foto '{photo.filename}' a S3: {str(e)}"
-                    )
+            if len(last_visita) > 0:
+                # Extraer el número del último VID
+                last_vid_number = last_visita[0].to_dict().get('vid_number', 0)
+                new_vid_number = last_vid_number + 1
             else:
-                # Modo desarrollo: generar URL ficticia
-                photo_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
-                photos_urls.append(photo_url)
-                print(f"⚠️ Modo desarrollo: URL ficticia generada para {photo.filename}")
+                # Primera visita
+                new_vid_number = 1
+            
+            vid = f"VID-{new_vid_number}"
+            
+        except Exception as e:
+            print(f"❌ Error generando VID: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error generando VID: {str(e)}"
+            )
         
         # Preparar datos para guardar en Firebase
-        reconocimiento_data = {
-            "id": reconocimiento_id,
-            "tipo_intervencion": tipo_intervencion,
-            "descripcion_intervencion": descripcion_intervencion,
-            "direccion": direccion,
-            "observaciones": observaciones or "",
-            "coordinates": geometry,
-            "photosUrl": photos_urls,
-            "photos_uploaded": len(photos_urls),
+        visita_data = {
+            "vid": vid,
+            "vid_number": new_vid_number,
+            "nombre_up": nombre_up,
+            "nombre_up_detalle": nombre_up_detalle,
+            "barrio_vereda": barrio_vereda,
+            "comuna_corregimiento": comuna_corregimiento,
+            "fecha_visita": fecha_visita_dt.isoformat(),
             "created_at": datetime.utcnow().isoformat(),
             "timestamp": datetime.utcnow().isoformat()
         }
         
         # Guardar en Firebase
         try:
-            db.collection('reconocimientos_dagma').document(reconocimiento_id).set(reconocimiento_data)
-            print(f"✅ Reconocimiento {reconocimiento_id} guardado en Firebase")
+            db.collection('visitas_dagma').document(vid).set(visita_data)
+            print(f"✅ Visita {vid} guardada en Firebase")
         except Exception as e:
             print(f"❌ Error guardando en Firebase: {str(e)}")
-            # Si falla Firebase, intentar eliminar fotos de S3 (rollback)
-            if s3_client:
-                for photo_url in photos_urls:
-                    try:
-                        s3_key = photo_url.split('.com/')[-1]
-                        s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
-                    except:
-                        pass
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
             )
         
-        return ReconocimientoResponse(
+        return RegistroVisitaResponse(
             success=True,
-            id=reconocimiento_id,
-            message="Reconocimiento registrado exitosamente",
-            coordinates=geometry,
-            photosUrl=photos_urls,
-            photos_uploaded=len(photos_urls),
+            vid=vid,
+            message="Visita registrada exitosamente",
+            nombre_up=nombre_up,
+            nombre_up_detalle=nombre_up_detalle,
+            barrio_vereda=barrio_vereda,
+            comuna_corregimiento=comuna_corregimiento,
+            fecha_visita=fecha_visita_dt.isoformat(),
             timestamp=datetime.utcnow().isoformat()
         )
         
@@ -414,7 +367,7 @@ async def post_reconocimiento(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error registrando reconocimiento: {str(e)}"
+            detail=f"Error registrando visita: {str(e)}"
         )
 
 
@@ -538,4 +491,654 @@ async def delete_reporte(
         raise HTTPException(
             status_code=500,
             detail=f"Error eliminando reporte: {str(e)}"
+        )
+
+
+# ==================== ENDPOINT: Registrar Asistencia de Delegado ====================#
+@router.post(
+    "/registrar-asistencia-delegado",
+    summary="🟢 POST | Registrar Asistencia de Delegado",
+    description="""
+## 🟢 POST | Registrar Asistencia de Delegado
+
+**Propósito**: Registrar la asistencia de un delegado o acompañante a una visita,
+incluyendo información personal, ubicación GPS y timestamp del registro.
+
+### ✅ Campos requeridos:
+- **vid**: ID de la visita (texto)
+- **id_acompañante**: ID único del acompañante (texto)
+- **nombre_completo**: Nombre completo del delegado (texto)
+- **rol**: Rol o cargo del delegado (texto)
+- **nombre_centro_gestor**: Nombre del centro gestor (texto)
+- **telefono**: Número de teléfono de contacto (texto)
+- **email**: Correo electrónico (texto)
+- **coords**: Coordenadas GPS en formato JSON string {"lat": number, "lng": number}
+
+### 📍 Coordenadas GPS:
+Debes enviar las coordenadas como un string JSON con el formato:
+```json
+{"lat": 3.4516, "lng": -76.5320}
+```
+
+### 🕐 Fecha de Registro:
+El sistema registra automáticamente la fecha y hora exacta del momento del registro.
+
+### 📝 Ejemplo de uso con FormData:
+```javascript
+const coords = JSON.stringify({lat: 3.4516, lng: -76.5320});
+
+const formData = new FormData();
+formData.append('vid', 'VID-1');
+formData.append('id_acompañante', 'ACMP-001');
+formData.append('nombre_completo', 'Juan Pérez García');
+formData.append('rol', 'Supervisor');
+formData.append('nombre_centro_gestor', 'Centro Administrativo');
+formData.append('telefono', '+57 300 1234567');
+formData.append('email', 'juan.perez@example.com');
+formData.append('coords', coords);
+
+const response = await fetch('/registrar-asistencia-delegado', {
+    method: 'POST',
+    body: formData
+});
+```
+
+### ✅ Respuesta exitosa:
+```json
+{
+    "success": true,
+    "vid": "VID-1",
+    "id_acompañante": "ACMP-001",
+    "message": "Asistencia de delegado registrada exitosamente",
+    "nombre_completo": "Juan Pérez García",
+    "rol": "Supervisor",
+    "nombre_centro_gestor": "Centro Administrativo",
+    "telefono": "+57 300 1234567",
+    "email": "juan.perez@example.com",
+    "coords": {"lat": 3.4516, "lng": -76.5320},
+    "fecha_registro": "2026-02-06T15:30:45.123456",
+    "timestamp": "2026-02-06T15:30:45.123456"
+}
+```
+    """,
+    response_model=RegistroDelegadoResponse
+)
+async def post_registrar_asistencia_delegado(
+    vid: str = Form(..., min_length=1, description="ID de la visita"),
+    id_acompañante: str = Form(..., min_length=1, description="ID del acompañante"),
+    nombre_completo: str = Form(..., min_length=1, description="Nombre completo del delegado"),
+    rol: str = Form(..., min_length=1, description="Rol o cargo del delegado"),
+    nombre_centro_gestor: str = Form(..., min_length=1, description="Nombre del centro gestor"),
+    telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
+    email: str = Form(..., min_length=1, description="Correo electrónico"),
+    coords: str = Form(..., description="Coordenadas GPS en formato JSON string")
+):
+    """
+    Registrar la asistencia de un delegado o acompañante a una visita
+    """
+    try:
+        # Validar y parsear coordenadas
+        try:
+            coords_dict = json.loads(coords)
+            if not isinstance(coords_dict, dict):
+                raise ValueError("Las coordenadas deben ser un objeto JSON")
+            if "lat" not in coords_dict or "lng" not in coords_dict:
+                raise ValueError("Las coordenadas deben contener 'lat' y 'lng'")
+            
+            lat = float(coords_dict["lat"])
+            lng = float(coords_dict["lng"])
+            
+            # Validar rango de coordenadas
+            if not (-90 <= lat <= 90):
+                raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
+            if not (-180 <= lng <= 180):
+                raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
+            
+            coords_dict = {"lat": lat, "lng": lng}
+            
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato de coordenadas inválido. Debe ser un JSON con lat y lng: {str(e)}"
+            )
+        except (ValueError, KeyError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error en coordenadas: {str(e)}"
+            )
+        
+        # Validar formato de email básico
+        if "@" not in email or "." not in email:
+            raise HTTPException(
+                status_code=400,
+                detail="Formato de email inválido"
+            )
+        
+        # Generar timestamp del momento del registro
+        fecha_registro = datetime.utcnow()
+        
+        # Crear ID único para el documento (combinación de VID e ID_acompañante)
+        doc_id = f"{vid}_{id_acompañante}"
+        
+        # Preparar datos para guardar en Firebase
+        delegado_data = {
+            "vid": vid,
+            "id_acompañante": id_acompañante,
+            "nombre_completo": nombre_completo,
+            "rol": rol,
+            "nombre_centro_gestor": nombre_centro_gestor,
+            "telefono": telefono,
+            "email": email,
+            "coords": coords_dict,
+            "fecha_registro": fecha_registro.isoformat(),
+            "created_at": fecha_registro.isoformat(),
+            "timestamp": fecha_registro.isoformat()
+        }
+        
+        # Guardar en Firebase
+        try:
+            db.collection('delegados_asistencia').document(doc_id).set(delegado_data)
+            print(f"✅ Asistencia de delegado {id_acompañante} para visita {vid} guardada en Firebase")
+        except Exception as e:
+            print(f"❌ Error guardando en Firebase: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error guardando en Firebase: {str(e)}"
+            )
+        
+        return RegistroDelegadoResponse(
+            success=True,
+            vid=vid,
+            id_acompañante=id_acompañante,
+            message="Asistencia de delegado registrada exitosamente",
+            nombre_completo=nombre_completo,
+            rol=rol,
+            nombre_centro_gestor=nombre_centro_gestor,
+            telefono=telefono,
+            email=email,
+            coords=coords_dict,
+            fecha_registro=fecha_registro.isoformat(),
+            timestamp=datetime.utcnow().isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error registrando asistencia de delegado: {str(e)}"
+        )
+
+
+# ==================== ENDPOINT: Registrar Asistencia de Comunidad ====================#
+@router.post(
+    "/registrar-asistencia-comunidad",
+    summary="🟢 POST | Registrar Asistencia de Comunidad",
+    description="""
+## 🟢 POST | Registrar Asistencia de Comunidad
+
+**Propósito**: Registrar la asistencia de un miembro de la comunidad a una visita,
+incluyendo información personal, dirección, ubicación GPS y timestamp del registro.
+
+### ✅ Campos requeridos:
+- **vid**: ID de la visita (texto)
+- **id_asistente_comunidad**: ID único del asistente de la comunidad (texto)
+- **nombre_completo**: Nombre completo del asistente (texto)
+- **rol_comunidad**: Rol en la comunidad (texto)
+- **direccion**: Dirección de residencia (texto)
+- **barrio_vereda**: Nombre del barrio o vereda (texto)
+- **comuna_corregimiento**: Comuna o corregimiento (texto)
+- **telefono**: Número de teléfono de contacto (texto)
+- **email**: Correo electrónico (texto)
+- **coords**: Coordenadas GPS en formato JSON string {"lat": number, "lng": number}
+
+### 📍 Coordenadas GPS:
+Debes enviar las coordenadas como un string JSON con el formato:
+```json
+{"lat": 3.4516, "lng": -76.5320}
+```
+
+### 🕐 Fecha de Registro:
+El sistema registra automáticamente la fecha y hora exacta del momento del registro.
+
+### 📝 Ejemplo de uso con FormData:
+```javascript
+const coords = JSON.stringify({lat: 3.4516, lng: -76.5320});
+
+const formData = new FormData();
+formData.append('vid', 'VID-1');
+formData.append('id_asistente_comunidad', 'COM-001');
+formData.append('nombre_completo', 'María López Torres');
+formData.append('rol_comunidad', 'Líder Comunitario');
+formData.append('direccion', 'Calle 15 #10-25');
+formData.append('barrio_vereda', 'San Antonio');
+formData.append('comuna_corregimiento', 'Comuna 5');
+formData.append('telefono', '+57 310 9876543');
+formData.append('email', 'maria.lopez@example.com');
+formData.append('coords', coords);
+
+const response = await fetch('/registrar-asistencia-comunidad', {
+    method: 'POST',
+    body: formData
+});
+```
+
+### ✅ Respuesta exitosa:
+```json
+{
+    "success": true,
+    "vid": "VID-1",
+    "id_asistente_comunidad": "COM-001",
+    "message": "Asistencia de comunidad registrada exitosamente",
+    "nombre_completo": "María López Torres",
+    "rol_comunidad": "Líder Comunitario",
+    "direccion": "Calle 15 #10-25",
+    "barrio_vereda": "San Antonio",
+    "comuna_corregimiento": "Comuna 5",
+    "telefono": "+57 310 9876543",
+    "email": "maria.lopez@example.com",
+    "coords": {"lat": 3.4516, "lng": -76.5320},
+    "fecha_registro": "2026-02-06T15:30:45.123456",
+    "timestamp": "2026-02-06T15:30:45.123456"
+}
+```
+    """,
+    response_model=RegistroComunidadResponse
+)
+async def post_registrar_asistencia_comunidad(
+    vid: str = Form(..., min_length=1, description="ID de la visita"),
+    id_asistente_comunidad: str = Form(..., min_length=1, description="ID del asistente de la comunidad"),
+    nombre_completo: str = Form(..., min_length=1, description="Nombre completo del asistente"),
+    rol_comunidad: str = Form(..., min_length=1, description="Rol en la comunidad"),
+    direccion: str = Form(..., min_length=1, description="Dirección de residencia"),
+    barrio_vereda: str = Form(..., min_length=1, description="Nombre del barrio o vereda"),
+    comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
+    telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
+    email: str = Form(..., min_length=1, description="Correo electrónico"),
+    coords: str = Form(..., description="Coordenadas GPS en formato JSON string")
+):
+    """
+    Registrar la asistencia de un miembro de la comunidad a una visita
+    """
+    try:
+        # Validar y parsear coordenadas
+        try:
+            coords_dict = json.loads(coords)
+            if not isinstance(coords_dict, dict):
+                raise ValueError("Las coordenadas deben ser un objeto JSON")
+            if "lat" not in coords_dict or "lng" not in coords_dict:
+                raise ValueError("Las coordenadas deben contener 'lat' y 'lng'")
+            
+            lat = float(coords_dict["lat"])
+            lng = float(coords_dict["lng"])
+            
+            # Validar rango de coordenadas
+            if not (-90 <= lat <= 90):
+                raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
+            if not (-180 <= lng <= 180):
+                raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
+            
+            coords_dict = {"lat": lat, "lng": lng}
+            
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato de coordenadas inválido. Debe ser un JSON con lat y lng: {str(e)}"
+            )
+        except (ValueError, KeyError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error en coordenadas: {str(e)}"
+            )
+        
+        # Validar formato de email básico
+        if "@" not in email or "." not in email:
+            raise HTTPException(
+                status_code=400,
+                detail="Formato de email inválido"
+            )
+        
+        # Generar timestamp del momento del registro
+        fecha_registro = datetime.utcnow()
+        
+        # Crear ID único para el documento (combinación de VID e ID_asistente_comunidad)
+        doc_id = f"{vid}_{id_asistente_comunidad}"
+        
+        # Preparar datos para guardar en Firebase
+        comunidad_data = {
+            "vid": vid,
+            "id_asistente_comunidad": id_asistente_comunidad,
+            "nombre_completo": nombre_completo,
+            "rol_comunidad": rol_comunidad,
+            "direccion": direccion,
+            "barrio_vereda": barrio_vereda,
+            "comuna_corregimiento": comuna_corregimiento,
+            "telefono": telefono,
+            "email": email,
+            "coords": coords_dict,
+            "fecha_registro": fecha_registro.isoformat(),
+            "created_at": fecha_registro.isoformat(),
+            "timestamp": fecha_registro.isoformat()
+        }
+        
+        # Guardar en Firebase
+        try:
+            db.collection('comunidad_asistencia').document(doc_id).set(comunidad_data)
+            print(f"✅ Asistencia de comunidad {id_asistente_comunidad} para visita {vid} guardada en Firebase")
+        except Exception as e:
+            print(f"❌ Error guardando en Firebase: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error guardando en Firebase: {str(e)}"
+            )
+        
+        return RegistroComunidadResponse(
+            success=True,
+            vid=vid,
+            id_asistente_comunidad=id_asistente_comunidad,
+            message="Asistencia de comunidad registrada exitosamente",
+            nombre_completo=nombre_completo,
+            rol_comunidad=rol_comunidad,
+            direccion=direccion,
+            barrio_vereda=barrio_vereda,
+            comuna_corregimiento=comuna_corregimiento,
+            telefono=telefono,
+            email=email,
+            coords=coords_dict,
+            fecha_registro=fecha_registro.isoformat(),
+            timestamp=datetime.utcnow().isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error registrando asistencia de comunidad: {str(e)}"
+        )
+
+
+# ==================== ENDPOINT: Registrar Requerimiento ====================#
+@router.post(
+    "/registrar-requerimiento",
+    summary="🟢 POST | Registrar Requerimiento",
+    description="""
+## 🟢 POST | Registrar Requerimiento
+
+**Propósito**: Registrar un nuevo requerimiento con información del solicitante,
+ubicación GPS, estado, nota de voz opcional y organismos encargados.
+
+### ✅ Campos requeridos:
+- **vid**: ID de la visita (texto)
+- **centro_gestor_solicitante**: Centro gestor del solicitante (texto)
+- **solicitante_contacto**: Nombre del contacto solicitante (texto)
+- **requerimiento**: Descripción del requerimiento (texto)
+- **observaciones**: Observaciones adicionales (texto)
+- **direccion**: Dirección del requerimiento (texto)
+- **barrio_vereda**: Barrio o vereda (texto)
+- **comuna_corregimiento**: Comuna o corregimiento (texto)
+- **coords**: Coordenadas GPS en formato JSON string {"lat": number, "lng": number}
+- **telefono**: Número de teléfono de contacto (texto)
+- **email_solicitante**: Correo electrónico del solicitante (texto)
+- **organismos_encargados**: Lista de nombres de centros gestores en formato JSON array ["nombre1", "nombre2"]
+
+### 📥 Campos opcionales:
+- **nota_voz**: Archivo de audio (opcional)
+
+### 🔢 RID (ID de Requerimiento):
+El sistema genera automáticamente un ID único con formato **REQ-#** donde # es un 
+consecutivo incremental dentro de cada visita. Ejemplo: REQ-1, REQ-2, REQ-3...
+
+### 📍 Estado:
+Por defecto, el registro se crea con estado "Pendiente".
+
+### 📍 Coordenadas GPS:
+Debes enviar las coordenadas como un string JSON con el formato:
+```json
+{"lat": 3.4516, "lng": -76.5320}
+```
+
+### 🎤 Nota de Voz:
+Si se incluye un archivo de audio, este se sube a S3 y se retorna la URL.
+
+### 📝 Ejemplo de uso con FormData:
+```javascript
+const coords = JSON.stringify({lat: 3.4516, lng: -76.5320});
+const organismos = JSON.stringify(["DAGMA", "Secretaría de Obras"]);
+
+const formData = new FormData();
+formData.append('vid', 'VID-1');
+formData.append('centro_gestor_solicitante', 'DAGMA');
+formData.append('solicitante_contacto', 'María López');
+formData.append('requerimiento', 'Solicitud de mejoramiento vial');
+formData.append('observaciones', 'Urgente, vía en mal estado');
+formData.append('direccion', 'Calle 5 # 40-20');
+formData.append('barrio_vereda', 'San Fernando');
+formData.append('comuna_corregimiento', 'Comuna 3');
+formData.append('coords', coords);
+formData.append('telefono', '+57 300 1234567');
+formData.append('email_solicitante', 'maria.lopez@example.com');
+formData.append('organismos_encargados', organismos);
+
+// Archivo de audio opcional
+if (audioFile) {
+    formData.append('nota_voz', audioFile);
+}
+
+const response = await fetch('/registrar-requerimiento', {
+    method: 'POST',
+    body: formData
+});
+```
+
+### ✅ Respuesta exitosa:
+```json
+{
+    "success": true,
+    "vid": "VID-1",
+    "rid": "REQ-1",
+    "message": "Requerimiento registrado exitosamente",
+    "centro_gestor_solicitante": "DAGMA",
+    "solicitante_contacto": "María López",
+    "requerimiento": "Solicitud de mejoramiento vial",
+    "observaciones": "Urgente, vía en mal estado",
+    "direccion": "Calle 5 # 40-20",
+    "barrio_vereda": "San Fernando",
+    "comuna_corregimiento": "Comuna 3",
+    "coords": {"lat": 3.4516, "lng": -76.5320},
+    "estado": "Pendiente",
+    "nota_voz_url": "https://s3.amazonaws.com/bucket/audio.mp3",
+    "telefono": "+57 300 1234567",
+    "email_solicitante": "maria.lopez@example.com",
+    "fecha_registro": "2026-02-06T15:30:45.123456",
+    "organismos_encargados": ["DAGMA", "Secretaría de Obras"],
+    "timestamp": "2026-02-06T15:30:45.123456"
+}
+```
+    """,
+    response_model=RegistroRequerimientoResponse
+)
+async def post_registrar_requerimiento(
+    vid: str = Form(..., min_length=1, description="ID de la visita"),
+    centro_gestor_solicitante: str = Form(..., min_length=1, description="Centro gestor del solicitante"),
+    solicitante_contacto: str = Form(..., min_length=1, description="Nombre del contacto solicitante"),
+    requerimiento: str = Form(..., min_length=1, description="Descripción del requerimiento"),
+    observaciones: str = Form(..., min_length=1, description="Observaciones adicionales"),
+    direccion: str = Form(..., min_length=1, description="Dirección del requerimiento"),
+    barrio_vereda: str = Form(..., min_length=1, description="Barrio o vereda"),
+    comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
+    coords: str = Form(..., description="Coordenadas GPS en formato JSON string"),
+    telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
+    email_solicitante: str = Form(..., min_length=1, description="Correo electrónico del solicitante"),
+    organismos_encargados: str = Form(..., description="Lista de nombres de centros gestores en formato JSON array"),
+    nota_voz: Optional[UploadFile] = File(None, description="Archivo de audio opcional")
+):
+    """
+    Registrar un nuevo requerimiento con información del solicitante y ubicación GPS
+    """
+    try:
+        # Parsear coordenadas GPS
+        try:
+            coords_dict = json.loads(coords)
+            if not isinstance(coords_dict, dict) or 'lat' not in coords_dict or 'lng' not in coords_dict:
+                raise ValueError("Coordenadas deben contener 'lat' y 'lng'")
+            
+            # Validar que las coordenadas sean números
+            lat = float(coords_dict['lat'])
+            lng = float(coords_dict['lng'])
+            
+            if not (-90 <= lat <= 90):
+                raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
+            if not (-180 <= lng <= 180):
+                raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
+            
+            # Actualizar con valores validados
+            coords_dict = {"lat": lat, "lng": lng}
+            
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato de coords inválido. Debe ser JSON con 'lat' y 'lng': {str(e)}"
+            )
+        
+        # Parsear organismos encargados
+        try:
+            organismos_list = json.loads(organismos_encargados)
+            if not isinstance(organismos_list, list):
+                raise ValueError("organismos_encargados debe ser un array")
+            # Validar que todos los elementos sean strings
+            organismos_list = [str(org) for org in organismos_list]
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato de organismos_encargados inválido. Debe ser un JSON array: {str(e)}"
+            )
+        
+        # Generar RID con consecutivo incremental dentro de cada visita
+        try:
+            # Obtener todos los requerimientos de esta visita
+            requerimientos_ref = db.collection('requerimientos_dagma')
+            # Filtrar por vid y ordenar por rid_number
+            requerimientos_visita = requerimientos_ref.where('vid', '==', vid).order_by('rid_number', direction='DESCENDING').limit(1).get()
+            
+            if len(requerimientos_visita) > 0:
+                # Extraer el número del último RID de esta visita
+                last_rid_number = requerimientos_visita[0].to_dict().get('rid_number', 0)
+                new_rid_number = last_rid_number + 1
+            else:
+                # Primer requerimiento de esta visita
+                new_rid_number = 1
+            
+            rid = f"REQ-{new_rid_number}"
+            
+        except Exception as e:
+            print(f"❌ Error generando RID: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error generando RID: {str(e)}"
+            )
+        
+        # Procesar archivo de audio si se proporciona
+        nota_voz_url = None
+        if nota_voz and nota_voz.filename:
+            try:
+                # Validar tipo de archivo de audio
+                allowed_audio_types = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/webm", "audio/m4a", "audio/x-m4a"]
+                if nota_voz.content_type not in allowed_audio_types:
+                    raise ValueError(f"Tipo de archivo no permitido: {nota_voz.content_type}. Permitidos: {', '.join(allowed_audio_types)}")
+                
+                # Leer contenido del archivo
+                audio_content = await nota_voz.read()
+                
+                # Generar nombre único para el archivo
+                audio_extension = os.path.splitext(nota_voz.filename)[1] or '.mp3'
+                audio_filename = f"requerimientos/{vid}/{rid}/nota_voz_{uuid.uuid4().hex}{audio_extension}"
+                
+                # Subir a S3
+                s3_client = get_s3_client()
+                bucket_name = os.getenv('AWS_S3_BUCKET_NAME', '360-dagma-photos')
+                
+                s3_client.put_object(
+                    Bucket=bucket_name,
+                    Key=audio_filename,
+                    Body=audio_content,
+                    ContentType=nota_voz.content_type
+                )
+                
+                # Generar URL del archivo
+                nota_voz_url = f"https://{bucket_name}.s3.amazonaws.com/{audio_filename}"
+                print(f"✅ Nota de voz subida a S3: {nota_voz_url}")
+                
+            except Exception as e:
+                print(f"⚠️ Advertencia: Error subiendo nota de voz: {str(e)}")
+                # No falla el registro si hay error con el audio
+        
+        # Capturar fecha y hora de registro
+        fecha_registro = datetime.utcnow()
+        
+        # Crear ID único para el documento
+        doc_id = f"{vid}_{rid}"
+        
+        # Preparar datos para guardar en Firebase
+        requerimiento_data = {
+            "vid": vid,
+            "rid": rid,
+            "rid_number": new_rid_number,
+            "centro_gestor_solicitante": centro_gestor_solicitante,
+            "solicitante_contacto": solicitante_contacto,
+            "requerimiento": requerimiento,
+            "observaciones": observaciones,
+            "direccion": direccion,
+            "barrio_vereda": barrio_vereda,
+            "comuna_corregimiento": comuna_corregimiento,
+            "coords": coords_dict,
+            "estado": "Pendiente",
+            "nota_voz_url": nota_voz_url,
+            "telefono": telefono,
+            "email_solicitante": email_solicitante,
+            "fecha_registro": fecha_registro.isoformat(),
+            "organismos_encargados": organismos_list,
+            "created_at": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Guardar en Firebase
+        try:
+            db.collection('requerimientos_dagma').document(doc_id).set(requerimiento_data)
+            print(f"✅ Requerimiento {rid} para visita {vid} guardado en Firebase")
+        except Exception as e:
+            print(f"❌ Error guardando en Firebase: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error guardando en Firebase: {str(e)}"
+            )
+        
+        return RegistroRequerimientoResponse(
+            success=True,
+            vid=vid,
+            rid=rid,
+            message="Requerimiento registrado exitosamente",
+            centro_gestor_solicitante=centro_gestor_solicitante,
+            solicitante_contacto=solicitante_contacto,
+            requerimiento=requerimiento,
+            observaciones=observaciones,
+            direccion=direccion,
+            barrio_vereda=barrio_vereda,
+            comuna_corregimiento=comuna_corregimiento,
+            coords=coords_dict,
+            estado="Pendiente",
+            nota_voz_url=nota_voz_url,
+            telefono=telefono,
+            email_solicitante=email_solicitante,
+            fecha_registro=fecha_registro.isoformat(),
+            organismos_encargados=organismos_list,
+            timestamp=datetime.utcnow().isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error registrando requerimiento: {str(e)}"
         )

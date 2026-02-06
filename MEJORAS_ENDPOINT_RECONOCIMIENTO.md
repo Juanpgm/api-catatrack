@@ -1,7 +1,60 @@
-# 🔧 MEJORAS IMPLEMENTADAS EN ENDPOINT POST /grupo-operativo/reconocimiento
+# ⚠️ ENDPOINT DEPRECADO - REEMPLAZADO POR /registrar-visita/
+
+**Fecha de actualización:** 6 de febrero de 2026
+
+---
+
+## 📢 AVISO IMPORTANTE
+
+Este endpoint ha sido **REEMPLAZADO** por el nuevo endpoint `/registrar-visita/`.
+
+### Endpoint Antiguo (DEPRECADO):
+
+- ❌ `POST /grupo-operativo/reconocimiento`
+
+### Endpoint Nuevo (ACTUAL):
+
+- ✅ `POST /registrar-visita/`
+
+---
+
+## 🔄 CAMBIOS PRINCIPALES
+
+El endpoint `/registrar-visita/` tiene una nueva estructura y parámetros:
+
+### Nuevos Parámetros:
+
+- `vid`: ID generado automáticamente con formato "VID-#" (consecutivo incremental)
+- `nombre_up`: Nombre de la unidad de proyecto (texto)
+- `nombre_up_detalle`: Detalle del nombre de la unidad de proyecto (texto)
+- `barrio_vereda`: Nombre del barrio o vereda (texto)
+- `comuna_corregimiento`: Comuna o corregimiento (texto)
+- `fecha_visita`: Fecha de la visita en formato timestamp
+
+### Parámetros Eliminados:
+
+- ❌ `tipo_intervencion`
+- ❌ `descripcion_intervencion`
+- ❌ `direccion`
+- ❌ `observaciones`
+- ❌ `coordinates_type`
+- ❌ `coordinates_data`
+- ❌ `photos`
+
+---
+
+## 📝 DOCUMENTACIÓN ACTUALIZADA
+
+Para ver la documentación completa del nuevo endpoint, consulta:
+
+📄 **[ENDPOINT_REGISTRO_VISITA.md](ENDPOINT_REGISTRO_VISITA.md)**
+
+---
+
+# 🔧 MEJORAS ANTERIORES EN ENDPOINT POST /grupo-operativo/reconocimiento (DEPRECADO)
 
 **Fecha:** 5 de febrero de 2026  
-**Endpoint:** `POST /grupo-operativo/reconocimiento`  
+**Endpoint:** `POST /grupo-operativo/reconocimiento` _(DEPRECADO)_  
 **Archivo modificado:** `app/routes/artefacto_360_routes.py`
 
 ---

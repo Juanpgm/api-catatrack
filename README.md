@@ -40,7 +40,7 @@ API para gestión de artefacto de captura DAGMA (Departamento Administrativo de 
 ### Artefacto de Captura DAGMA
 
 - `GET /init/parques` - Inicialización de parques para DAGMA
-- `POST /grupo-operativo/reconocimiento` - Registrar reconocimiento del grupo operativo
+- `POST /registrar-visita/` - Registrar visita con información de unidad de proyecto
 - `GET /grupo-operativo/reportes` - Obtener reportes del grupo operativo
 - `DELETE /grupo-operativo/eliminar-reporte` - Eliminar reporte del grupo operativo
 

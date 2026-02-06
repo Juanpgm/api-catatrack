@@ -1,5 +1,13 @@
 """
-Script de prueba para el endpoint POST /grupo-operativo/reconocimiento
+⚠️ ARCHIVO DEPRECADO - Script de prueba para el endpoint POST /grupo-operativo/reconocimiento
+
+ESTE ENDPOINT HA SIDO REEMPLAZADO POR /registrar-visita/
+
+Para pruebas actualizadas, usa: test_registro_visita_endpoint.py
+
+---
+
+Script de prueba original para el endpoint POST /grupo-operativo/reconocimiento (DEPRECADO)
 Valida que el endpoint esté registrando correctamente en Firebase y S3
 """
 import requests
