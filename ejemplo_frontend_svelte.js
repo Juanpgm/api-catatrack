@@ -1,6 +1,6 @@
 /**
  * Ejemplo de uso del endpoint /registrar-requerimiento desde Svelte
- * 
+ *
  * Este archivo muestra cómo implementar el formulario y la lógica
  * para enviar datos al endpoint POST /registrar-requerimiento
  */
@@ -479,49 +479,52 @@
  * @returns {Promise<Object>} - Respuesta del servidor
  */
 async function registrarRequerimientoJS(datos, archivoAudio = null) {
-  const API_BASE_URL = 'http://localhost:8000';
-  
+  const API_BASE_URL = "http://localhost:8000";
+
   // Crear FormData
   const formData = new FormData();
-  formData.append('vid', datos.vid);
-  formData.append('centro_gestor_solicitante', datos.centro_gestor_solicitante);
-  formData.append('solicitante_contacto', datos.solicitante_contacto);
-  formData.append('requerimiento', datos.requerimiento);
-  formData.append('observaciones', datos.observaciones);
-  formData.append('direccion', datos.direccion);
-  formData.append('barrio_vereda', datos.barrio_vereda);
-  formData.append('comuna_corregimiento', datos.comuna_corregimiento);
-  formData.append('coords', JSON.stringify(datos.coords));
-  formData.append('telefono', datos.telefono);
-  formData.append('email_solicitante', datos.email_solicitante);
-  formData.append('organismos_encargados', JSON.stringify(datos.organismos_encargados));
-  
+  formData.append("vid", datos.vid);
+  formData.append("centro_gestor_solicitante", datos.centro_gestor_solicitante);
+  formData.append("solicitante_contacto", datos.solicitante_contacto);
+  formData.append("requerimiento", datos.requerimiento);
+  formData.append("observaciones", datos.observaciones);
+  formData.append("direccion", datos.direccion);
+  formData.append("barrio_vereda", datos.barrio_vereda);
+  formData.append("comuna_corregimiento", datos.comuna_corregimiento);
+  formData.append("coords", JSON.stringify(datos.coords));
+  formData.append("telefono", datos.telefono);
+  formData.append("email_solicitante", datos.email_solicitante);
+  formData.append(
+    "organismos_encargados",
+    JSON.stringify(datos.organismos_encargados),
+  );
+
   // Agregar archivo de audio si existe
   if (archivoAudio) {
-    formData.append('nota_voz', archivoAudio);
+    formData.append("nota_voz", archivoAudio);
   }
-  
+
   try {
     const response = await fetch(`${API_BASE_URL}/registrar-requerimiento`, {
-      method: 'POST',
-      body: formData
+      method: "POST",
+      body: formData,
     });
-    
+
     const data = await response.json();
-    
+
     if (!response.ok) {
-      throw new Error(data.detail || 'Error al registrar el requerimiento');
+      throw new Error(data.detail || "Error al registrar el requerimiento");
     }
-    
+
     return {
       success: true,
-      data: data
+      data: data,
     };
   } catch (error) {
-    console.error('Error:', error);
+    console.error("Error:", error);
     return {
       success: false,
-      error: error.message
+      error: error.message,
     };
   }
 }
@@ -532,20 +535,20 @@ async function registrarRequerimientoJS(datos, archivoAudio = null) {
  */
 function obtenerUbicacionGPSJS() {
   return new Promise((resolve, reject) => {
-    if ('geolocation' in navigator) {
+    if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           resolve({
             lat: position.coords.latitude,
-            lng: position.coords.longitude
+            lng: position.coords.longitude,
           });
         },
         (error) => {
           reject(error);
-        }
+        },
       );
     } else {
-      reject(new Error('Geolocalización no soportada'));
+      reject(new Error("Geolocalización no soportada"));
     }
   });
 }

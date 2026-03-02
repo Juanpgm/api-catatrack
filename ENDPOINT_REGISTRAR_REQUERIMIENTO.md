@@ -18,25 +18,25 @@ POST /registrar-requerimiento
 
 ### Campos Requeridos
 
-| Campo | Tipo | Descripción | Ejemplo |
-|-------|------|-------------|---------|
-| `vid` | string | ID de la visita | `"VID-1"` |
-| `centro_gestor_solicitante` | string | Centro gestor del solicitante | `"DAGMA"` |
-| `solicitante_contacto` | string | Nombre del contacto solicitante | `"María López García"` |
-| `requerimiento` | string | Descripción del requerimiento | `"Solicitud de mejoramiento vial"` |
-| `observaciones` | string | Observaciones adicionales | `"Vía en mal estado"` |
-| `direccion` | string | Dirección del requerimiento | `"Calle 5 # 40-20"` |
-| `barrio_vereda` | string | Barrio o vereda | `"San Fernando"` |
-| `comuna_corregimiento` | string | Comuna o corregimiento | `"Comuna 3"` |
-| `coords` | string (JSON) | Coordenadas GPS | `{"lat": 3.4516, "lng": -76.5320}` |
-| `telefono` | string | Número de teléfono de contacto | `"+57 300 1234567"` |
-| `email_solicitante` | string | Correo electrónico del solicitante | `"maria.lopez@example.com"` |
-| `organismos_encargados` | string (JSON Array) | Lista de organismos encargados | `["DAGMA", "Secretaría de Obras"]` |
+| Campo                       | Tipo                | Descripción                        | Ejemplo                            |
+| --------------------------- | ------------------- | ---------------------------------- | ---------------------------------- |
+| `vid`                       | string              | ID de la visita                    | `"VID-1"`                          |
+| `centro_gestor_solicitante` | string              | Centro gestor del solicitante      | `"DAGMA"`                          |
+| `solicitante_contacto`      | string              | Nombre del contacto solicitante    | `"María López García"`             |
+| `requerimiento`             | string              | Descripción del requerimiento      | `"Solicitud de mejoramiento vial"` |
+| `observaciones`             | string              | Observaciones adicionales          | `"Vía en mal estado"`              |
+| `direccion`                 | string              | Dirección del requerimiento        | `"Calle 5 # 40-20"`                |
+| `barrio_vereda`             | string              | Barrio o vereda                    | `"San Fernando"`                   |
+| `comuna_corregimiento`      | string              | Comuna o corregimiento             | `"Comuna 3"`                       |
+| `coords`                    | string (JSON)       | Coordenadas GPS                    | `{"lat": 3.4516, "lng": -76.5320}` |
+| `telefono`                  | string              | Número de teléfono de contacto     | `"+57 300 1234567"`                |
+| `email_solicitante`         | string              | Correo electrónico del solicitante | `"maria.lopez@example.com"`        |
+| `organismos_encargados`     | string (JSON Array) | Lista de organismos encargados     | `["DAGMA", "Secretaría de Obras"]` |
 
 ### Campos Opcionales
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
+| Campo      | Tipo | Descripción                                 |
+| ---------- | ---- | ------------------------------------------- |
 | `nota_voz` | File | Archivo de audio (MP3, WAV, OGG, WEBM, M4A) |
 
 ---
@@ -60,17 +60,14 @@ POST /registrar-requerimiento
   "comuna_corregimiento": "Comuna 3",
   "coords": {
     "lat": 3.4516,
-    "lng": -76.5320
+    "lng": -76.532
   },
   "estado": "Pendiente",
   "nota_voz_url": "https://bucket.s3.amazonaws.com/requerimientos/VID-1/REQ-1/nota_voz_abc123.mp3",
   "telefono": "+57 300 1234567",
   "email_solicitante": "maria.lopez@example.com",
   "fecha_registro": "2026-02-06T15:30:45.123456",
-  "organismos_encargados": [
-    "DAGMA",
-    "Secretaría de Obras Públicas"
-  ],
+  "organismos_encargados": ["DAGMA", "Secretaría de Obras Públicas"],
   "timestamp": "2026-02-06T15:30:45.123456"
 }
 ```
@@ -99,7 +96,7 @@ POST /registrar-requerimiento
 
 - **Formato**: `REQ-#`
 - **Comportamiento**: El número es incremental **dentro de cada visita (VID)**
-- **Ejemplo**: 
+- **Ejemplo**:
   - Para VID-1: REQ-1, REQ-2, REQ-3...
   - Para VID-2: REQ-1, REQ-2, REQ-3...
 
@@ -138,26 +135,26 @@ POST /registrar-requerimiento
 ### Ejemplo 1: JavaScript con FormData (sin audio)
 
 ```javascript
-const coords = JSON.stringify({ lat: 3.4516, lng: -76.5320 });
+const coords = JSON.stringify({ lat: 3.4516, lng: -76.532 });
 const organismos = JSON.stringify(["DAGMA", "Secretaría de Obras"]);
 
 const formData = new FormData();
-formData.append('vid', 'VID-1');
-formData.append('centro_gestor_solicitante', 'DAGMA');
-formData.append('solicitante_contacto', 'María López García');
-formData.append('requerimiento', 'Solicitud de mejoramiento vial');
-formData.append('observaciones', 'Vía en mal estado');
-formData.append('direccion', 'Calle 5 # 40-20');
-formData.append('barrio_vereda', 'San Fernando');
-formData.append('comuna_corregimiento', 'Comuna 3');
-formData.append('coords', coords);
-formData.append('telefono', '+57 300 1234567');
-formData.append('email_solicitante', 'maria.lopez@example.com');
-formData.append('organismos_encargados', organismos);
+formData.append("vid", "VID-1");
+formData.append("centro_gestor_solicitante", "DAGMA");
+formData.append("solicitante_contacto", "María López García");
+formData.append("requerimiento", "Solicitud de mejoramiento vial");
+formData.append("observaciones", "Vía en mal estado");
+formData.append("direccion", "Calle 5 # 40-20");
+formData.append("barrio_vereda", "San Fernando");
+formData.append("comuna_corregimiento", "Comuna 3");
+formData.append("coords", coords);
+formData.append("telefono", "+57 300 1234567");
+formData.append("email_solicitante", "maria.lopez@example.com");
+formData.append("organismos_encargados", organismos);
 
-const response = await fetch('http://localhost:8000/registrar-requerimiento', {
-  method: 'POST',
-  body: formData
+const response = await fetch("http://localhost:8000/registrar-requerimiento", {
+  method: "POST",
+  body: formData,
 });
 
 const data = await response.json();
@@ -167,35 +164,35 @@ console.log(data);
 ### Ejemplo 2: JavaScript con FormData (con audio)
 
 ```javascript
-const coords = JSON.stringify({ lat: 3.4516, lng: -76.5320 });
+const coords = JSON.stringify({ lat: 3.4516, lng: -76.532 });
 const organismos = JSON.stringify(["DAGMA", "Secretaría de Obras"]);
 
 // Obtener archivo de audio desde un input
-const audioInput = document.getElementById('audio-input');
+const audioInput = document.getElementById("audio-input");
 const audioFile = audioInput.files[0];
 
 const formData = new FormData();
-formData.append('vid', 'VID-1');
-formData.append('centro_gestor_solicitante', 'DAGMA');
-formData.append('solicitante_contacto', 'María López García');
-formData.append('requerimiento', 'Solicitud de mejoramiento vial');
-formData.append('observaciones', 'Vía en mal estado');
-formData.append('direccion', 'Calle 5 # 40-20');
-formData.append('barrio_vereda', 'San Fernando');
-formData.append('comuna_corregimiento', 'Comuna 3');
-formData.append('coords', coords);
-formData.append('telefono', '+57 300 1234567');
-formData.append('email_solicitante', 'maria.lopez@example.com');
-formData.append('organismos_encargados', organismos);
+formData.append("vid", "VID-1");
+formData.append("centro_gestor_solicitante", "DAGMA");
+formData.append("solicitante_contacto", "María López García");
+formData.append("requerimiento", "Solicitud de mejoramiento vial");
+formData.append("observaciones", "Vía en mal estado");
+formData.append("direccion", "Calle 5 # 40-20");
+formData.append("barrio_vereda", "San Fernando");
+formData.append("comuna_corregimiento", "Comuna 3");
+formData.append("coords", coords);
+formData.append("telefono", "+57 300 1234567");
+formData.append("email_solicitante", "maria.lopez@example.com");
+formData.append("organismos_encargados", organismos);
 
 // Agregar archivo de audio
 if (audioFile) {
-  formData.append('nota_voz', audioFile);
+  formData.append("nota_voz", audioFile);
 }
 
-const response = await fetch('http://localhost:8000/registrar-requerimiento', {
-  method: 'POST',
-  body: formData
+const response = await fetch("http://localhost:8000/registrar-requerimiento", {
+  method: "POST",
+  body: formData,
 });
 
 const data = await response.json();
@@ -279,11 +276,11 @@ if not (-180 <= lng <= 180):
 ```python
 # Tipos MIME permitidos
 allowed_audio_types = [
-    "audio/mpeg", 
-    "audio/mp3", 
-    "audio/wav", 
-    "audio/ogg", 
-    "audio/webm", 
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/ogg",
+    "audio/webm",
     "audio/m4a"
 ]
 ```
@@ -319,7 +316,7 @@ allowed_audio_types = [
   "comuna_corregimiento": "Comuna 3",
   "coords": {
     "lat": 3.4516,
-    "lng": -76.5320
+    "lng": -76.532
   },
   "estado": "Pendiente",
   "nota_voz_url": "https://...",
@@ -401,7 +398,8 @@ AWS_S3_BUCKET_NAME=360-dagma-photos
 
 **Causa**: Problema con la configuración de AWS S3.
 
-**Solución**: 
+**Solución**:
+
 1. Verifica que las credenciales de AWS estén correctas
 2. Verifica que el bucket exista
 3. Verifica que el tipo de archivo sea permitido
@@ -423,13 +421,13 @@ AWS_S3_BUCKET_NAME=360-dagma-photos
 navigator.geolocation.getCurrentPosition(async (position) => {
   const coords = {
     lat: position.coords.latitude,
-    lng: position.coords.longitude
+    lng: position.coords.longitude,
   };
-  
+
   // Registrar requerimiento
   await registrarRequerimiento({
     ...datos,
-    coords: JSON.stringify(coords)
+    coords: JSON.stringify(coords),
   });
 });
 ```
@@ -441,33 +439,37 @@ navigator.geolocation.getCurrentPosition(async (position) => {
 let mediaRecorder;
 let audioChunks = [];
 
-navigator.mediaDevices.getUserMedia({ audio: true })
-  .then(stream => {
-    mediaRecorder = new MediaRecorder(stream);
-    
-    mediaRecorder.ondataavailable = (event) => {
-      audioChunks.push(event.data);
-    };
-    
-    mediaRecorder.onstop = () => {
-      const audioBlob = new Blob(audioChunks, { type: 'audio/mpeg' });
-      const audioFile = new File([audioBlob], 'nota_voz.mp3', { type: 'audio/mpeg' });
-      
-      // Usar audioFile en FormData
-      formData.append('nota_voz', audioFile);
-    };
-    
-    mediaRecorder.start();
-  });
+navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+  mediaRecorder = new MediaRecorder(stream);
+
+  mediaRecorder.ondataavailable = (event) => {
+    audioChunks.push(event.data);
+  };
+
+  mediaRecorder.onstop = () => {
+    const audioBlob = new Blob(audioChunks, { type: "audio/mpeg" });
+    const audioFile = new File([audioBlob], "nota_voz.mp3", {
+      type: "audio/mpeg",
+    });
+
+    // Usar audioFile en FormData
+    formData.append("nota_voz", audioFile);
+  };
+
+  mediaRecorder.start();
+});
 ```
 
 ### 3. Selección Múltiple de Organismos
 
 ```javascript
 // Checkbox UI para selección múltiple
-const organismosSeleccionados = ['DAGMA', 'Secretaría de Obras', 'Planeación'];
+const organismosSeleccionados = ["DAGMA", "Secretaría de Obras", "Planeación"];
 
-formData.append('organismos_encargados', JSON.stringify(organismosSeleccionados));
+formData.append(
+  "organismos_encargados",
+  JSON.stringify(organismosSeleccionados),
+);
 ```
 
 ---
