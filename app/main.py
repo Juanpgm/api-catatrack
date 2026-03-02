@@ -2,6 +2,7 @@
 API Task Tracker - Main Application
 """
 import logging
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -43,6 +44,24 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+
+def _get_allowed_origins() -> list[str]:
+    default_origins = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",
+    ]
+
+    configured = os.getenv("CORS_ALLOW_ORIGINS", "")
+    if not configured.strip():
+        return default_origins
+
+    parsed = [origin.strip() for origin in configured.split(",") if origin.strip()]
+    if not parsed:
+        return default_origins
+
+    return parsed
+
 # Configurar rate limiting
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -54,14 +73,11 @@ app.add_middleware(SlowAPIMiddleware)
 # Configurar CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        # Desarrollo local
-        "http://localhost:3000",      # React default     # React alternate
-        "http://localhost:5173",      # Vite default
-        # Producción
-        "https://web-production-2d737.up.railway.app",  # Railway API
-
-    ],
+    allow_origins=_get_allowed_origins(),
+    allow_origin_regex=os.getenv(
+        "CORS_ALLOW_ORIGIN_REGEX",
+        r"https://([a-zA-Z0-9-]+\.)?(railway\.app|vercel\.app|netlify\.app)$",
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

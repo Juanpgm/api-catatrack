@@ -225,6 +225,7 @@ async def register_health_check():
     }
 
 @router.post("/auth/register")
+@router.post("/auth/register/", include_in_schema=False)
 @limiter.limit("3/minute")
 async def register_user(user_data: UserRegistrationRequest, request: Request):
     """
