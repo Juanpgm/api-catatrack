@@ -32,14 +32,15 @@ from app.routes import (
     monitoring_routes,
     firebase_routes,
     artefacto_360_routes,
-    auth_routes
+    auth_routes,
+    seguimiento_routes,
 )
 
 # Crear aplicación FastAPI
 app = FastAPI(
-    title="API Task Tracker",
-    description="API para gestión de tareas con Firebase/Firestore - Soporte completo UTF-8 🇪🇸",
-    version="1.0.0",
+    title="API CataTrack",
+    description="API para CataTrack - Sistema de seguimiento de requerimientos con Firebase/Firestore 🇨🇴",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -90,6 +91,7 @@ app.include_router(monitoring_routes.router)
 app.include_router(firebase_routes.router)
 app.include_router(artefacto_360_routes.router)
 app.include_router(auth_routes.router)
+app.include_router(seguimiento_routes.router)
 
 # Manejador de errores global
 @app.exception_handler(Exception)

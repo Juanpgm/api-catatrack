@@ -11,8 +11,8 @@ async def read_root():
     Endpoint raíz con información básica de la API
     """
     return {
-        "message": "API Task Tracker - Bienvenido",
-        "version": "1.0.0",
+        "message": "API CataTrack - Bienvenido",
+        "version": "2.0.0",
         "status": "active",
         "documentation": "/docs"
     }
