@@ -130,14 +130,15 @@ class RegistroDelegadoResponse(BaseModel):
     """Modelo de respuesta para registro de asistencia de delegado"""
     success: bool
     vid: str
-    id_acompañante: str
+    id_acompanante: str
     message: str
     nombre_completo: str
     rol: str
     nombre_centro_gestor: str
     telefono: str
     email: str
-    coords: dict
+    latitud: str
+    longitud: str
     fecha_registro: str
     timestamp: str
 
@@ -155,7 +156,8 @@ class RegistroComunidadResponse(BaseModel):
     comuna_corregimiento: str
     telefono: str
     email: str
-    coords: dict
+    latitud: str
+    longitud: str
     fecha_registro: str
     timestamp: str
 
@@ -173,7 +175,8 @@ class RegistroRequerimientoResponse(BaseModel):
     direccion: str
     barrio_vereda: str
     comuna_corregimiento: str
-    coords: dict
+    latitud: str
+    longitud: str
     estado: str
     nota_voz_url: Optional[str]
     telefono: str
@@ -288,18 +291,22 @@ async def post_registro_visita(
     Registrar una visita con información de la unidad de proyecto
     """
     try:
-        # Validar y convertir fecha_visita (timestamp)
+        # Validar y convertir fecha_visita (acepta YYYY-MM-DD o timestamp numérico)
         try:
-            # Intentar convertir el timestamp a datetime
-            timestamp_int = int(fecha_visita)
-            # Si es timestamp en milisegundos, convertir a segundos
-            if timestamp_int > 10000000000:
-                timestamp_int = timestamp_int // 1000
-            fecha_visita_dt = datetime.fromtimestamp(timestamp_int)
+            # Intentar parsear como fecha YYYY-MM-DD primero
+            try:
+                fecha_visita_dt = datetime.strptime(fecha_visita, "%Y-%m-%d")
+            except ValueError:
+                # Si no es fecha, intentar como timestamp numérico
+                timestamp_int = int(fecha_visita)
+                # Si es timestamp en milisegundos, convertir a segundos
+                if timestamp_int > 10000000000:
+                    timestamp_int = timestamp_int // 1000
+                fecha_visita_dt = datetime.fromtimestamp(timestamp_int)
         except (ValueError, TypeError) as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Formato de fecha_visita inválido. Debe ser un timestamp válido: {str(e)}"
+                detail=f"Formato de fecha_visita inválido. Debe ser YYYY-MM-DD o timestamp numérico: {str(e)}"
             )
         
         # Generar VID con consecutivo incremental
@@ -392,19 +399,16 @@ const reportes = await response.json();
 )
 async def get_reportes():
     """
-    Obtener todos los reportes del grupo operativo
+    Obtener todos los reportes del grupo operativo desde Firebase
     """
     try:
-        # TODO: Implementar conexión a Firebase
-        # reportes_ref = db.collection('reconocimientos_dagma')
-        # docs = reportes_ref.order_by('created_at', direction='DESCENDING').stream()
-        
         reportes = []
-        # for doc in docs:
-        #     data = doc.to_dict()
-        #     data['id'] = doc.id
-        #     reportes.append(data)
-        
+        docs = db.collection('requerimientos_dagma').order_by('created_at', direction='DESCENDING').stream()
+        for doc in docs:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            reportes.append(clean_nan_values(data))
+
         return {
             "success": True,
             "data": reportes,
@@ -460,33 +464,45 @@ async def delete_reporte(
     Eliminar un reporte del grupo operativo
     """
     try:
-        # TODO: Implementar eliminación de fotos en S3
-        # s3_client = boto3.client('s3')
-        # bucket = '360-dagma-photos'
-        # prefix = f'reconocimientos/{reporte_id}/'
-        
-        # Listar y eliminar objetos en S3
-        # response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-        # photos_deleted = 0
-        
-        # if 'Contents' in response:
-        #     for obj in response['Contents']:
-        #         s3_client.delete_object(Bucket=bucket, Key=obj['Key'])
-        #         photos_deleted += 1
-        
+        doc_ref = db.collection('requerimientos_dagma').document(reporte_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Reporte {reporte_id} no encontrado"
+            )
+
+        # Intentar eliminar nota de voz de S3 si existe
         photos_deleted = 0
-        
-        # TODO: Eliminar documento de Firebase
-        # db.collection('reconocimientos_dagma').document(reporte_id).delete()
-        
+        try:
+            data = doc.to_dict() or {}
+            nota_voz_url = data.get('nota_voz_url')
+            if nota_voz_url:
+                s3_client = get_s3_client()
+                bucket_name = os.getenv('AWS_S3_BUCKET_NAME', '360-dagma-photos')
+                vid = data.get('vid', '')
+                rid = data.get('rid', '')
+                prefix = f"requerimientos/{vid}/{rid}/"
+                response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+                if 'Contents' in response:
+                    for obj in response['Contents']:
+                        s3_client.delete_object(Bucket=bucket_name, Key=obj['Key'])
+                        photos_deleted += 1
+        except Exception:
+            pass
+
+        doc_ref.delete()
+
         return {
             "success": True,
             "id": reporte_id,
-            "message": "Reporte y fotos eliminados exitosamente",
+            "message": "Reporte eliminado exitosamente",
             "photos_deleted": photos_deleted,
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -506,40 +522,32 @@ incluyendo información personal, ubicación GPS y timestamp del registro.
 
 ### ✅ Campos requeridos:
 - **vid**: ID de la visita (texto)
-- **id_acompañante**: ID único del acompañante (texto)
+- **id_acompanante**: ID único del acompañante (texto)
 - **nombre_completo**: Nombre completo del delegado (texto)
 - **rol**: Rol o cargo del delegado (texto)
 - **nombre_centro_gestor**: Nombre del centro gestor (texto)
 - **telefono**: Número de teléfono de contacto (texto)
 - **email**: Correo electrónico (texto)
-- **coords**: Coordenadas GPS en formato JSON string {"lat": number, "lng": number}
+- **latitud**: Latitud GPS (número como texto)
+- **longitud**: Longitud GPS (número como texto)
 
-### 📍 Coordenadas GPS:
-Debes enviar las coordenadas como un string JSON con el formato:
-```json
-{"lat": 3.4516, "lng": -76.5320}
-```
-
-### 🕐 Fecha de Registro:
-El sistema registra automáticamente la fecha y hora exacta del momento del registro.
-
-### 📝 Ejemplo de uso con FormData:
+### 📝 Ejemplo de uso con form-urlencoded:
 ```javascript
-const coords = JSON.stringify({lat: 3.4516, lng: -76.5320});
-
-const formData = new FormData();
-formData.append('vid', 'VID-1');
-formData.append('id_acompañante', 'ACMP-001');
-formData.append('nombre_completo', 'Juan Pérez García');
-formData.append('rol', 'Supervisor');
-formData.append('nombre_centro_gestor', 'Centro Administrativo');
-formData.append('telefono', '+57 300 1234567');
-formData.append('email', 'juan.perez@example.com');
-formData.append('coords', coords);
+const data = new URLSearchParams();
+data.append('vid', 'VID-1');
+data.append('id_acompanante', 'ACMP-001');
+data.append('nombre_completo', 'Juan Pérez García');
+data.append('rol', 'Supervisor');
+data.append('nombre_centro_gestor', 'Centro Administrativo');
+data.append('telefono', '+57 300 1234567');
+data.append('email', 'juan.perez@example.com');
+data.append('latitud', '3.4516');
+data.append('longitud', '-76.5320');
 
 const response = await fetch('/registrar-asistencia-delegado', {
     method: 'POST',
-    body: formData
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: data
 });
 ```
 
@@ -548,14 +556,15 @@ const response = await fetch('/registrar-asistencia-delegado', {
 {
     "success": true,
     "vid": "VID-1",
-    "id_acompañante": "ACMP-001",
+    "id_acompanante": "ACMP-001",
     "message": "Asistencia de delegado registrada exitosamente",
     "nombre_completo": "Juan Pérez García",
     "rol": "Supervisor",
     "nombre_centro_gestor": "Centro Administrativo",
     "telefono": "+57 300 1234567",
     "email": "juan.perez@example.com",
-    "coords": {"lat": 3.4516, "lng": -76.5320},
+    "latitud": "3.4516",
+    "longitud": "-76.5320",
     "fecha_registro": "2026-02-06T15:30:45.123456",
     "timestamp": "2026-02-06T15:30:45.123456"
 }
@@ -565,13 +574,14 @@ const response = await fetch('/registrar-asistencia-delegado', {
 )
 async def post_registrar_asistencia_delegado(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
-    id_acompañante: str = Form(..., min_length=1, description="ID del acompañante"),
+    id_acompanante: str = Form(..., min_length=1, description="ID del acompañante"),
     nombre_completo: str = Form(..., min_length=1, description="Nombre completo del delegado"),
     rol: str = Form(..., min_length=1, description="Rol o cargo del delegado"),
     nombre_centro_gestor: str = Form(..., min_length=1, description="Nombre del centro gestor"),
     telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
     email: str = Form(..., min_length=1, description="Correo electrónico"),
-    coords: str = Form(..., description="Coordenadas GPS en formato JSON string")
+    latitud: str = Form(..., description="Latitud GPS"),
+    longitud: str = Form(..., description="Longitud GPS")
 ):
     """
     Registrar la asistencia de un delegado o acompañante a una visita
@@ -579,88 +589,77 @@ async def post_registrar_asistencia_delegado(
     try:
         # Validar y parsear coordenadas
         try:
-            coords_dict = json.loads(coords)
-            if not isinstance(coords_dict, dict):
-                raise ValueError("Las coordenadas deben ser un objeto JSON")
-            if "lat" not in coords_dict or "lng" not in coords_dict:
-                raise ValueError("Las coordenadas deben contener 'lat' y 'lng'")
-            
-            lat = float(coords_dict["lat"])
-            lng = float(coords_dict["lng"])
-            
+            lat = float(latitud)
+            lng = float(longitud)
+
             # Validar rango de coordenadas
             if not (-90 <= lat <= 90):
                 raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
             if not (-180 <= lng <= 180):
                 raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
-            
-            coords_dict = {"lat": lat, "lng": lng}
-            
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Formato de coordenadas inválido. Debe ser un JSON con lat y lng: {str(e)}"
-            )
-        except (ValueError, KeyError) as e:
+
+        except ValueError as e:
             raise HTTPException(
                 status_code=400,
                 detail=f"Error en coordenadas: {str(e)}"
             )
-        
+
         # Validar formato de email básico
         if "@" not in email or "." not in email:
             raise HTTPException(
                 status_code=400,
                 detail="Formato de email inválido"
             )
-        
+
         # Generar timestamp del momento del registro
         fecha_registro = datetime.utcnow()
-        
-        # Crear ID único para el documento (combinación de VID e ID_acompañante)
-        doc_id = f"{vid}_{id_acompañante}"
-        
+
+        # Crear ID único para el documento (combinación de VID e ID_acompanante)
+        doc_id = f"{vid}_{id_acompanante}"
+
         # Preparar datos para guardar en Firebase
         delegado_data = {
             "vid": vid,
-            "id_acompañante": id_acompañante,
+            "id_acompanante": id_acompanante,
             "nombre_completo": nombre_completo,
             "rol": rol,
             "nombre_centro_gestor": nombre_centro_gestor,
             "telefono": telefono,
             "email": email,
-            "coords": coords_dict,
+            "latitud": latitud,
+            "longitud": longitud,
             "fecha_registro": fecha_registro.isoformat(),
             "created_at": fecha_registro.isoformat(),
             "timestamp": fecha_registro.isoformat()
         }
-        
+
         # Guardar en Firebase
         try:
             db.collection('delegados_asistencia').document(doc_id).set(delegado_data)
-            print(f"✅ Asistencia de delegado {id_acompañante} para visita {vid} guardada en Firebase")
+            print(f"✅ Asistencia de delegado {id_acompanante} para visita {vid} guardada en Firebase")
         except Exception as e:
             print(f"❌ Error guardando en Firebase: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
             )
-        
+
         return RegistroDelegadoResponse(
             success=True,
             vid=vid,
-            id_acompañante=id_acompañante,
+            id_acompanante=id_acompanante,
             message="Asistencia de delegado registrada exitosamente",
             nombre_completo=nombre_completo,
             rol=rol,
             nombre_centro_gestor=nombre_centro_gestor,
             telefono=telefono,
             email=email,
-            coords=coords_dict,
+            latitud=latitud,
+            longitud=longitud,
             fecha_registro=fecha_registro.isoformat(),
             timestamp=datetime.utcnow().isoformat()
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -690,38 +689,8 @@ incluyendo información personal, dirección, ubicación GPS y timestamp del reg
 - **comuna_corregimiento**: Comuna o corregimiento (texto)
 - **telefono**: Número de teléfono de contacto (texto)
 - **email**: Correo electrónico (texto)
-- **coords**: Coordenadas GPS en formato JSON string {"lat": number, "lng": number}
-
-### 📍 Coordenadas GPS:
-Debes enviar las coordenadas como un string JSON con el formato:
-```json
-{"lat": 3.4516, "lng": -76.5320}
-```
-
-### 🕐 Fecha de Registro:
-El sistema registra automáticamente la fecha y hora exacta del momento del registro.
-
-### 📝 Ejemplo de uso con FormData:
-```javascript
-const coords = JSON.stringify({lat: 3.4516, lng: -76.5320});
-
-const formData = new FormData();
-formData.append('vid', 'VID-1');
-formData.append('id_asistente_comunidad', 'COM-001');
-formData.append('nombre_completo', 'María López Torres');
-formData.append('rol_comunidad', 'Líder Comunitario');
-formData.append('direccion', 'Calle 15 #10-25');
-formData.append('barrio_vereda', 'San Antonio');
-formData.append('comuna_corregimiento', 'Comuna 5');
-formData.append('telefono', '+57 310 9876543');
-formData.append('email', 'maria.lopez@example.com');
-formData.append('coords', coords);
-
-const response = await fetch('/registrar-asistencia-comunidad', {
-    method: 'POST',
-    body: formData
-});
-```
+- **latitud**: Latitud GPS (número como texto)
+- **longitud**: Longitud GPS (número como texto)
 
 ### ✅ Respuesta exitosa:
 ```json
@@ -730,14 +699,8 @@ const response = await fetch('/registrar-asistencia-comunidad', {
     "vid": "VID-1",
     "id_asistente_comunidad": "COM-001",
     "message": "Asistencia de comunidad registrada exitosamente",
-    "nombre_completo": "María López Torres",
-    "rol_comunidad": "Líder Comunitario",
-    "direccion": "Calle 15 #10-25",
-    "barrio_vereda": "San Antonio",
-    "comuna_corregimiento": "Comuna 5",
-    "telefono": "+57 310 9876543",
-    "email": "maria.lopez@example.com",
-    "coords": {"lat": 3.4516, "lng": -76.5320},
+    "latitud": "3.4516",
+    "longitud": "-76.5320",
     "fecha_registro": "2026-02-06T15:30:45.123456",
     "timestamp": "2026-02-06T15:30:45.123456"
 }
@@ -755,7 +718,8 @@ async def post_registrar_asistencia_comunidad(
     comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
     telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
     email: str = Form(..., min_length=1, description="Correo electrónico"),
-    coords: str = Form(..., description="Coordenadas GPS en formato JSON string")
+    latitud: str = Form(..., description="Latitud GPS"),
+    longitud: str = Form(..., description="Longitud GPS")
 ):
     """
     Registrar la asistencia de un miembro de la comunidad a una visita
@@ -763,47 +727,34 @@ async def post_registrar_asistencia_comunidad(
     try:
         # Validar y parsear coordenadas
         try:
-            coords_dict = json.loads(coords)
-            if not isinstance(coords_dict, dict):
-                raise ValueError("Las coordenadas deben ser un objeto JSON")
-            if "lat" not in coords_dict or "lng" not in coords_dict:
-                raise ValueError("Las coordenadas deben contener 'lat' y 'lng'")
-            
-            lat = float(coords_dict["lat"])
-            lng = float(coords_dict["lng"])
-            
+            lat = float(latitud)
+            lng = float(longitud)
+
             # Validar rango de coordenadas
             if not (-90 <= lat <= 90):
                 raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
             if not (-180 <= lng <= 180):
                 raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
-            
-            coords_dict = {"lat": lat, "lng": lng}
-            
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Formato de coordenadas inválido. Debe ser un JSON con lat y lng: {str(e)}"
-            )
-        except (ValueError, KeyError) as e:
+
+        except ValueError as e:
             raise HTTPException(
                 status_code=400,
                 detail=f"Error en coordenadas: {str(e)}"
             )
-        
+
         # Validar formato de email básico
         if "@" not in email or "." not in email:
             raise HTTPException(
                 status_code=400,
                 detail="Formato de email inválido"
             )
-        
+
         # Generar timestamp del momento del registro
         fecha_registro = datetime.utcnow()
-        
+
         # Crear ID único para el documento (combinación de VID e ID_asistente_comunidad)
         doc_id = f"{vid}_{id_asistente_comunidad}"
-        
+
         # Preparar datos para guardar en Firebase
         comunidad_data = {
             "vid": vid,
@@ -815,12 +766,13 @@ async def post_registrar_asistencia_comunidad(
             "comuna_corregimiento": comuna_corregimiento,
             "telefono": telefono,
             "email": email,
-            "coords": coords_dict,
+            "latitud": latitud,
+            "longitud": longitud,
             "fecha_registro": fecha_registro.isoformat(),
             "created_at": fecha_registro.isoformat(),
             "timestamp": fecha_registro.isoformat()
         }
-        
+
         # Guardar en Firebase
         try:
             db.collection('comunidad_asistencia').document(doc_id).set(comunidad_data)
@@ -831,7 +783,7 @@ async def post_registrar_asistencia_comunidad(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
             )
-        
+
         return RegistroComunidadResponse(
             success=True,
             vid=vid,
@@ -844,11 +796,12 @@ async def post_registrar_asistencia_comunidad(
             comuna_corregimiento=comuna_corregimiento,
             telefono=telefono,
             email=email,
-            coords=coords_dict,
+            latitud=latitud,
+            longitud=longitud,
             fecha_registro=fecha_registro.isoformat(),
             timestamp=datetime.utcnow().isoformat()
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -967,7 +920,8 @@ async def post_registrar_requerimiento(
     direccion: str = Form(..., min_length=1, description="Dirección del requerimiento"),
     barrio_vereda: str = Form(..., min_length=1, description="Barrio o vereda"),
     comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
-    coords: str = Form(..., description="Coordenadas GPS en formato JSON string"),
+    latitud: str = Form(..., description="Latitud GPS"),
+    longitud: str = Form(..., description="Longitud GPS"),
     telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
     email_solicitante: str = Form(..., min_length=1, description="Correo electrónico del solicitante"),
     organismos_encargados: str = Form(..., description="Lista de nombres de centros gestores en formato JSON array"),
@@ -977,28 +931,20 @@ async def post_registrar_requerimiento(
     Registrar un nuevo requerimiento con información del solicitante y ubicación GPS
     """
     try:
-        # Parsear coordenadas GPS
+        # Validar coordenadas GPS
         try:
-            coords_dict = json.loads(coords)
-            if not isinstance(coords_dict, dict) or 'lat' not in coords_dict or 'lng' not in coords_dict:
-                raise ValueError("Coordenadas deben contener 'lat' y 'lng'")
-            
-            # Validar que las coordenadas sean números
-            lat = float(coords_dict['lat'])
-            lng = float(coords_dict['lng'])
-            
+            lat = float(latitud)
+            lng = float(longitud)
+
             if not (-90 <= lat <= 90):
                 raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
             if not (-180 <= lng <= 180):
                 raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
-            
-            # Actualizar con valores validados
-            coords_dict = {"lat": lat, "lng": lng}
-            
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
+
+        except ValueError as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Formato de coords inválido. Debe ser JSON con 'lat' y 'lng': {str(e)}"
+                detail=f"Error en coordenadas: {str(e)}"
             )
         
         # Parsear organismos encargados
@@ -1091,7 +1037,8 @@ async def post_registrar_requerimiento(
             "direccion": direccion,
             "barrio_vereda": barrio_vereda,
             "comuna_corregimiento": comuna_corregimiento,
-            "coords": coords_dict,
+            "latitud": latitud,
+            "longitud": longitud,
             "estado": "Pendiente",
             "nota_voz_url": nota_voz_url,
             "telefono": telefono,
@@ -1125,7 +1072,8 @@ async def post_registrar_requerimiento(
             direccion=direccion,
             barrio_vereda=barrio_vereda,
             comuna_corregimiento=comuna_corregimiento,
-            coords=coords_dict,
+            latitud=latitud,
+            longitud=longitud,
             estado="Pendiente",
             nota_voz_url=nota_voz_url,
             telefono=telefono,
