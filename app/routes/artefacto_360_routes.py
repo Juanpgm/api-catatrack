@@ -490,6 +490,67 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
         )
 
 
+# ==================== ENDPOINT: Obtener Visitas Programadas ====================
+@router.get(
+    "/obtener-visitas-programadas/",
+    summary="🔵 GET | Obtener Visitas Programadas",
+    description="""
+## 🔵 GET | Obtener Visitas Programadas
+
+**Propósito**: Obtener todos los registros de la colección "visitas" almacenados en Firebase.
+
+### 📝 Ejemplo de uso:
+```javascript
+const response = await fetch('/obtener-visitas-programadas/');
+const data = await response.json();
+```
+
+### ✅ Respuesta exitosa:
+```json
+{
+    "success": true,
+    "total": 2,
+    "visitas": [
+        {
+            "vid": "VID-1",
+            "barrio_vereda": "San Fernando",
+            "comuna_corregimiento": "Comuna 3",
+            "descripcion_visita": "Visita de inspección ambiental",
+            "observaciones_visita": "Se encontraron residuos sólidos",
+            "acompanantes": [...],
+            "fecha_visita": "13/04/2026",
+            "hora_visita": "14:30",
+            "timestamp": "2026-04-13T19:30:00Z"
+        }
+    ]
+}
+```
+    """,
+)
+async def obtener_visitas_programadas():
+    """
+    Obtener todos los registros de la colección visitas
+    """
+    try:
+        visitas_ref = db.collection('visitas')
+        docs = visitas_ref.stream()
+
+        visitas = []
+        for doc in docs:
+            visitas.append(doc.to_dict())
+
+        return {
+            "success": True,
+            "total": len(visitas),
+            "visitas": visitas
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error obteniendo visitas: {str(e)}"
+        )
+
+
 # ==================== ENDPOINT 3: Obtener Reportes ====================#
 @router.get(
     "/grupo-operativo/reportes",
