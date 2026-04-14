@@ -984,6 +984,183 @@ async def post_registrar_asistencia_comunidad(
         )
 
 
+# ==================== ENDPOINT: Crear Delegado ====================#
+@router.post(
+    "/crear-delegado/",
+    summary="🟢 POST | Crear Delegado",
+    description="""
+## 🟢 POST | Crear Delegado
+
+**Propósito**: Crear un nuevo registro de delegado en la colección "directorio_contactos".
+
+### ✅ Campos requeridos:
+- **nombre_completo**: Nombre completo del delegado (texto)
+- **telefono**: Teléfono de contacto (texto)
+- **email**: Correo electrónico (texto)
+- **centro_gestor**: Centro gestor al que pertenece (texto)
+
+### ✅ Campos opcionales:
+- **cedula**: Cédula del delegado (texto)
+- **rol**: Rol o cargo (texto)
+- **organismo**: Organismo al que pertenece (texto)
+
+### 📝 Ejemplo de uso:
+```javascript
+const response = await fetch('/crear-delegado/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        nombre_completo: 'Juan Pérez',
+        telefono: '3001234567',
+        email: 'juan@example.com',
+        centro_gestor: 'Centro Gestor Norte',
+        cedula: '1234567890',
+        rol: 'Líder ambiental',
+        organismo: 'DAGMA'
+    })
+});
+```
+    """,
+)
+async def crear_delegado(payload: dict = Body(...)):
+    """
+    Crear un nuevo delegado en la colección directorio_contactos
+    """
+    try:
+        # Validar campos requeridos
+        campos_requeridos = ["nombre_completo", "telefono", "email", "centro_gestor"]
+        faltantes = [c for c in campos_requeridos if not payload.get(c)]
+        if faltantes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Campos requeridos faltantes: {', '.join(faltantes)}"
+            )
+
+        delegado_data = {
+            "nombre_completo": payload["nombre_completo"],
+            "telefono": str(payload["telefono"]),
+            "email": payload["email"],
+            "centro_gestor": payload["centro_gestor"],
+            "cedula": str(payload.get("cedula", "")),
+            "rol": payload.get("rol", ""),
+            "organismo": payload.get("organismo", ""),
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        doc_ref = db.collection("directorio_contactos").document()
+        doc_ref.set(delegado_data)
+
+        return {
+            "success": True,
+            "id": doc_ref.id,
+            "message": "Delegado creado exitosamente",
+            "delegado": delegado_data,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creando delegado: {str(e)}"
+        )
+
+
+# ==================== ENDPOINT: Actualizar Delegado ====================#
+@router.patch(
+    "/actualizar-delegado/{delegado_id}",
+    summary="🟡 PATCH | Actualizar Delegado",
+    description="""
+## 🟡 PATCH | Actualizar Delegado
+
+**Propósito**: Actualizar parcialmente los datos de un delegado existente en la colección "directorio_contactos".
+Solo se actualizan los campos enviados en el body.
+
+### ✅ Parámetro de ruta:
+- **delegado_id**: ID del documento del delegado en Firestore
+
+### ✅ Campos actualizables (todos opcionales):
+- **nombre_completo**: Nombre completo del delegado
+- **telefono**: Teléfono de contacto
+- **email**: Correo electrónico
+- **centro_gestor**: Centro gestor
+- **cedula**: Cédula del delegado
+- **rol**: Rol o cargo
+- **organismo**: Organismo al que pertenece
+
+### 📝 Ejemplo de uso:
+```javascript
+const response = await fetch('/actualizar-delegado/ABC123docId', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        telefono: '3009999999',
+        rol: 'Coordinador ambiental'
+    })
+});
+```
+    """,
+)
+async def actualizar_delegado(delegado_id: str, payload: dict = Body(...)):
+    """
+    Actualizar parcialmente los datos de un delegado en directorio_contactos
+    """
+    try:
+        doc_ref = db.collection("directorio_contactos").document(delegado_id)
+        doc = doc_ref.get()
+
+        if not doc.exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Delegado con ID '{delegado_id}' no encontrado"
+            )
+
+        campos_permitidos = [
+            "nombre_completo", "telefono", "email", "centro_gestor",
+            "cedula", "rol", "organismo"
+        ]
+        update_data = {k: v for k, v in payload.items() if k in campos_permitidos}
+
+        if not update_data:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No se enviaron campos válidos para actualizar. Campos permitidos: {', '.join(campos_permitidos)}"
+            )
+
+        # Convertir telefono y cedula a string si vienen como número
+        if "telefono" in update_data:
+            update_data["telefono"] = str(update_data["telefono"])
+        if "cedula" in update_data:
+            update_data["cedula"] = str(update_data["cedula"])
+
+        update_data["updated_at"] = datetime.utcnow().isoformat()
+
+        doc_ref.update(update_data)
+
+        # Obtener el documento actualizado
+        updated_doc = doc_ref.get().to_dict()
+        updated_doc["id"] = delegado_id
+
+        return {
+            "success": True,
+            "id": delegado_id,
+            "message": "Delegado actualizado exitosamente",
+            "campos_actualizados": list(update_data.keys()),
+            "delegado": updated_doc,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error actualizando delegado: {str(e)}"
+        )
+
+
 # ==================== ENDPOINT: Registrar Requerimiento ====================#
 @router.post(
     "/registrar-requerimiento",
@@ -1163,12 +1340,12 @@ async def post_registrar_requerimiento(
         
         # Generar RID con consecutivo incremental dentro de cada visita
         try:
-            requerimientos_ref = db.collection('requerimientos_dagma')
-            requerimientos_visita = requerimientos_ref.where('vid', '==', vid).order_by('rid_number', direction='DESCENDING').limit(1).get()
+            requerimientos_ref = db.collection('requerimientos')
+            requerimientos_visita = requerimientos_ref.where('vid', '==', vid).get()
             
             if len(requerimientos_visita) > 0:
-                last_rid_number = requerimientos_visita[0].to_dict().get('rid_number', 0)
-                new_rid_number = last_rid_number + 1
+                max_rid = max(doc.to_dict().get('rid_number', 0) for doc in requerimientos_visita)
+                new_rid_number = max_rid + 1
             else:
                 new_rid_number = 1
             
@@ -1237,7 +1414,7 @@ async def post_registrar_requerimiento(
         
         # Guardar en Firebase
         try:
-            db.collection('requerimientos_dagma').document(doc_id).set(requerimiento_data)
+            db.collection('requerimientos').document(doc_id).set(requerimiento_data)
             print(f"✅ Requerimiento {rid} para visita {vid} guardado en Firebase")
         except Exception as e:
             print(f"❌ Error guardando en Firebase: {str(e)}")
@@ -1271,4 +1448,85 @@ async def post_registrar_requerimiento(
         raise HTTPException(
             status_code=500,
             detail=f"Error registrando requerimiento: {str(e)}"
+        )
+
+
+# ==================== ENDPOINT: Obtener Requerimientos ====================#
+@router.get(
+    "/obtener-requerimientos",
+    summary="🔵 GET | Obtener Requerimientos",
+    description="""
+## 🔵 GET | Obtener Requerimientos
+
+**Propósito**: Obtener todos los requerimientos registrados en la colección "requerimientos".
+Se puede filtrar opcionalmente por VID (visita).
+
+### 📥 Parámetros opcionales:
+- **vid**: Filtrar requerimientos por ID de visita (ej: VID-1)
+
+### 📝 Ejemplo de uso:
+```javascript
+// Todos los requerimientos
+const response = await fetch('/obtener-requerimientos');
+
+// Filtrar por visita
+const response = await fetch('/obtener-requerimientos?vid=VID-1');
+```
+
+### ✅ Respuesta exitosa:
+```json
+{
+    "success": true,
+    "total": 15,
+    "requerimientos": [
+        {
+            "id": "VID-1_REQ-1",
+            "vid": "VID-1",
+            "rid": "REQ-1",
+            "datos_solicitante": {...},
+            "requerimiento": "Solicitud de mejoramiento vial",
+            "observaciones": "Vía en mal estado",
+            "barrio_vereda": "San Pedro",
+            "comuna_corregimiento": "COMUNA 03",
+            "coords": {"type": "Point", "coordinates": [-76.532, 3.4516]},
+            "estado": "Pendiente",
+            "organismos_encargados": ["DAGMA"],
+            "fecha_registro": "2026-04-14T05:09:34.325667",
+            "timestamp": "2026-04-14T05:09:34.325667"
+        }
+    ]
+}
+```
+    """,
+)
+async def obtener_requerimientos(
+    vid: Optional[str] = Query(None, description="Filtrar por ID de visita (ej: VID-1)")
+):
+    """
+    Obtener todos los requerimientos de la colección 'requerimientos'.
+    Opcionalmente se puede filtrar por VID.
+    """
+    try:
+        requerimientos_ref = db.collection('requerimientos')
+
+        if vid:
+            docs = requerimientos_ref.where('vid', '==', vid).stream()
+        else:
+            docs = requerimientos_ref.stream()
+
+        requerimientos = []
+        for doc in docs:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            requerimientos.append(clean_nan_values(data))
+
+        return {
+            "success": True,
+            "total": len(requerimientos),
+            "requerimientos": requerimientos
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error obteniendo requerimientos: {str(e)}"
         )
