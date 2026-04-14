@@ -176,7 +176,7 @@ class RegistroVisitaRequest(BaseModel):
     comuna_corregimiento: str = Field(..., min_length=1, description="Comuna o corregimiento")
     descripcion_visita: str = Field(..., min_length=1, description="Descripción de la visita")
     observaciones_visita: str = Field(..., min_length=1, description="Observaciones de la visita")
-    acompanantes: AcompananteModel = Field(..., description="Datos del acompañante")
+    acompanantes: Optional[List[AcompananteModel]] = Field(None, description="Lista de acompañantes (opcional)")
     fecha_visita: str = Field(..., description="Fecha de la visita en formato dd/mm/aaaa")
     hora_visita: str = Field(..., description="Hora de la visita en formato HH:mm (hora Bogotá)")
 
@@ -190,7 +190,7 @@ class RegistroVisitaResponse(BaseModel):
     comuna_corregimiento: str
     descripcion_visita: str
     observaciones_visita: str
-    acompanantes: dict
+    acompanantes: Optional[List[dict]]
     fecha_visita: str
     hora_visita: str
     timestamp: str
@@ -308,7 +308,7 @@ descripción, observaciones, acompañantes y fecha/hora.
 - **comuna_corregimiento**: Comuna o corregimiento (texto)
 - **descripcion_visita**: Descripción de la visita (texto)
 - **observaciones_visita**: Observaciones de la visita (texto)
-- **acompanantes**: JSON con datos del acompañante: {"nombre_completo", "telefono", "email", "centro_gestor"}
+- **acompanantes**: (Opcional) Array JSON con datos de acompañantes: [{"nombre_completo", "telefono", "email", "centro_gestor"}, ...]
 - **fecha_visita**: Fecha de la visita en formato dd/mm/aaaa
 - **hora_visita**: Hora de la visita en formato HH:mm (hora de Bogotá, Colombia)
 
@@ -326,12 +326,20 @@ const response = await fetch('/registrar-visita/', {
         comuna_corregimiento: 'Comuna 3',
         descripcion_visita: 'Visita de inspección ambiental',
         observaciones_visita: 'Se encontraron residuos sólidos en la zona',
-        acompanantes: {
-            nombre_completo: 'Juan Pérez',
-            telefono: '3001234567',
-            email: 'juan@example.com',
-            centro_gestor: 'Centro Gestor Norte'
-        },
+        acompanantes: [
+            {
+                nombre_completo: 'Juan Pérez',
+                telefono: '3001234567',
+                email: 'juan@example.com',
+                centro_gestor: 'Centro Gestor Norte'
+            },
+            {
+                nombre_completo: 'María López',
+                telefono: '3009876543',
+                email: 'maria@example.com',
+                centro_gestor: 'Centro Gestor Sur'
+            }
+        ],
         fecha_visita: '13/04/2026',
         hora_visita: '14:30'
     })
@@ -348,12 +356,20 @@ const response = await fetch('/registrar-visita/', {
     "comuna_corregimiento": "Comuna 3",
     "descripcion_visita": "Visita de inspección ambiental",
     "observaciones_visita": "Se encontraron residuos sólidos en la zona",
-    "acompanantes": {
-        "nombre_completo": "Juan Pérez",
-        "telefono": "3001234567",
-        "email": "juan@example.com",
-        "centro_gestor": "Centro Gestor Norte"
-    },
+    "acompanantes": [
+        {
+            "nombre_completo": "Juan Pérez",
+            "telefono": "3001234567",
+            "email": "juan@example.com",
+            "centro_gestor": "Centro Gestor Norte"
+        },
+        {
+            "nombre_completo": "María López",
+            "telefono": "3009876543",
+            "email": "maria@example.com",
+            "centro_gestor": "Centro Gestor Sur"
+        }
+    ],
     "fecha_visita": "13/04/2026",
     "hora_visita": "14:30",
     "timestamp": "2026-04-13T19:30:00Z"
@@ -433,7 +449,7 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             "comuna_corregimiento": comuna_corregimiento,
             "descripcion_visita": descripcion_visita,
             "observaciones_visita": observaciones_visita,
-            "acompanantes": acompanantes.model_dump(),
+            "acompanantes": [a.model_dump() for a in acompanantes] if acompanantes else None,
             "fecha_visita": fecha_visita,
             "hora_visita": hora_visita,
             "created_at": datetime.utcnow().isoformat(),
@@ -459,7 +475,7 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             comuna_corregimiento=comuna_corregimiento,
             descripcion_visita=descripcion_visita,
             observaciones_visita=observaciones_visita,
-            acompanantes=acompanantes.model_dump(),
+            acompanantes=[a.model_dump() for a in acompanantes] if acompanantes else None,
             fecha_visita=fecha_visita,
             hora_visita=hora_visita,
             timestamp=datetime.utcnow().isoformat()
