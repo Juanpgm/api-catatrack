@@ -2,7 +2,9 @@
 
 ## 📋 Descripción General
 
-El endpoint `POST /registrar-requerimiento` permite registrar nuevos requerimientos con información del solicitante, ubicación GPS, estado, nota de voz opcional y organismos encargados.
+El endpoint `POST /registrar-requerimiento` permite registrar nuevos requerimientos con datos del solicitante, ubicación GPS en formato GeoJSON, estado, nota de voz opcional y organismos encargados.
+
+El sistema determina automáticamente el **barrio/vereda** y la **comuna/corregimiento** mediante intersección geográfica del punto GPS con los basemaps locales (shapely).
 
 ---
 
@@ -18,26 +20,27 @@ POST /registrar-requerimiento
 
 ### Campos Requeridos
 
-| Campo                       | Tipo                | Descripción                        | Ejemplo                            |
-| --------------------------- | ------------------- | ---------------------------------- | ---------------------------------- |
-| `vid`                       | string              | ID de la visita                    | `"VID-1"`                          |
-| `centro_gestor_solicitante` | string              | Centro gestor del solicitante      | `"DAGMA"`                          |
-| `solicitante_contacto`      | string              | Nombre del contacto solicitante    | `"María López García"`             |
-| `requerimiento`             | string              | Descripción del requerimiento      | `"Solicitud de mejoramiento vial"` |
-| `observaciones`             | string              | Observaciones adicionales          | `"Vía en mal estado"`              |
-| `direccion`                 | string              | Dirección del requerimiento        | `"Calle 5 # 40-20"`                |
-| `barrio_vereda`             | string              | Barrio o vereda                    | `"San Fernando"`                   |
-| `comuna_corregimiento`      | string              | Comuna o corregimiento             | `"Comuna 3"`                       |
-| `coords`                    | string (JSON)       | Coordenadas GPS                    | `{"lat": 3.4516, "lng": -76.5320}` |
-| `telefono`                  | string              | Número de teléfono de contacto     | `"+57 300 1234567"`                |
-| `email_solicitante`         | string              | Correo electrónico del solicitante | `"maria.lopez@example.com"`        |
-| `organismos_encargados`     | string (JSON Array) | Lista de organismos encargados     | `["DAGMA", "Secretaría de Obras"]` |
+| Campo                   | Tipo                | Descripción                                | Ejemplo                                                     |
+| ----------------------- | ------------------- | ------------------------------------------ | ----------------------------------------------------------- |
+| `vid`                   | string              | ID de la visita                            | `"VID-1"`                                                   |
+| `datos_solicitante`     | string (JSON dict)  | Datos del solicitante (una o más personas) | `{"personas": [{"nombre": "María López", "email": "..."}]}` |
+| `requerimiento`         | string              | Descripción del requerimiento              | `"Solicitud de mejoramiento vial"`                          |
+| `observaciones`         | string              | Observaciones adicionales                  | `"Vía en mal estado"`                                       |
+| `coords`                | string (GeoJSON)    | Coordenadas GPS en formato GeoJSON Point   | `{"type": "Point", "coordinates": [-76.5320, 3.4516]}`      |
+| `organismos_encargados` | string (JSON Array) | Lista de organismos encargados             | `["DAGMA", "Secretaría de Obras"]`                          |
 
 ### Campos Opcionales
 
 | Campo      | Tipo | Descripción                                 |
 | ---------- | ---- | ------------------------------------------- |
 | `nota_voz` | File | Archivo de audio (MP3, WAV, OGG, WEBM, M4A) |
+
+### Campos Auto-calculados (no se envían)
+
+| Campo                  | Tipo           | Descripción                                         |
+| ---------------------- | -------------- | --------------------------------------------------- |
+| `barrio_vereda`        | string \| null | Determinado por intersección geográfica con basemap |
+| `comuna_corregimiento` | string \| null | Determinado por intersección geográfica con basemap |
 
 ---
 
@@ -51,21 +54,26 @@ POST /registrar-requerimiento
   "vid": "VID-1",
   "rid": "REQ-1",
   "message": "Requerimiento registrado exitosamente",
-  "centro_gestor_solicitante": "DAGMA",
-  "solicitante_contacto": "María López García",
+  "datos_solicitante": {
+    "personas": [
+      {
+        "nombre": "María López",
+        "email": "maria@example.com",
+        "telefono": "+57 300 1234567",
+        "centro_gestor": "DAGMA"
+      }
+    ]
+  },
   "requerimiento": "Solicitud de mejoramiento vial",
   "observaciones": "Vía en mal estado",
-  "direccion": "Calle 5 # 40-20",
-  "barrio_vereda": "San Fernando",
-  "comuna_corregimiento": "Comuna 3",
+  "barrio_vereda": "San Pedro",
+  "comuna_corregimiento": "COMUNA 03",
   "coords": {
-    "lat": 3.4516,
-    "lng": -76.532
+    "type": "Point",
+    "coordinates": [-76.532, 3.4516]
   },
   "estado": "Pendiente",
   "nota_voz_url": "https://bucket.s3.amazonaws.com/requerimientos/VID-1/REQ-1/nota_voz_abc123.mp3",
-  "telefono": "+57 300 1234567",
-  "email_solicitante": "maria.lopez@example.com",
   "fecha_registro": "2026-02-06T15:30:45.123456",
   "organismos_encargados": ["DAGMA", "Secretaría de Obras Públicas"],
   "timestamp": "2026-02-06T15:30:45.123456"
@@ -76,7 +84,7 @@ POST /registrar-requerimiento
 
 ```json
 {
-  "detail": "Formato de coords inválido. Debe ser JSON con 'lat' y 'lng': ..."
+  "detail": "Formato de coords inválido. Debe ser GeoJSON Point: {\"type\": \"Point\", \"coordinates\": [lng, lat]}. Error: ..."
 }
 ```
 
@@ -109,12 +117,16 @@ POST /registrar-requerimiento
 - Se registra automáticamente el timestamp del momento en que se crea el requerimiento
 - Formato ISO 8601
 
-### 4. Coordenadas GPS
+### 4. Coordenadas GPS y Geolocalización Automática
 
 - Se validan las coordenadas:
   - Latitud: -90 a 90
   - Longitud: -180 a 180
-- Deben enviarse como string JSON: `{"lat": 3.4516, "lng": -76.5320}`
+- Deben enviarse como string JSON en formato GeoJSON Point: `{"type": "Point", "coordinates": [-76.5320, 3.4516]}`
+- El sistema realiza automáticamente intersección geográfica (shapely) con los basemaps:
+  - `basemaps/barrios_veredas.geojson` → campo `barrio_vereda`
+  - `basemaps/comunas_corregimientos.geojson` → campo `comuna_corregimiento`
+- Si el punto no cae dentro de ningún polígono, el valor será `null`
 
 ### 5. Nota de Voz Opcional
 
@@ -135,21 +147,28 @@ POST /registrar-requerimiento
 ### Ejemplo 1: JavaScript con FormData (sin audio)
 
 ```javascript
-const coords = JSON.stringify({ lat: 3.4516, lng: -76.532 });
+const coords = JSON.stringify({
+  type: "Point",
+  coordinates: [-76.532, 3.4516],
+});
 const organismos = JSON.stringify(["DAGMA", "Secretaría de Obras"]);
+const datosSolicitante = JSON.stringify({
+  personas: [
+    {
+      nombre: "María López García",
+      email: "maria.lopez@example.com",
+      telefono: "+57 300 1234567",
+      centro_gestor: "DAGMA",
+    },
+  ],
+});
 
 const formData = new FormData();
 formData.append("vid", "VID-1");
-formData.append("centro_gestor_solicitante", "DAGMA");
-formData.append("solicitante_contacto", "María López García");
+formData.append("datos_solicitante", datosSolicitante);
 formData.append("requerimiento", "Solicitud de mejoramiento vial");
 formData.append("observaciones", "Vía en mal estado");
-formData.append("direccion", "Calle 5 # 40-20");
-formData.append("barrio_vereda", "San Fernando");
-formData.append("comuna_corregimiento", "Comuna 3");
 formData.append("coords", coords);
-formData.append("telefono", "+57 300 1234567");
-formData.append("email_solicitante", "maria.lopez@example.com");
 formData.append("organismos_encargados", organismos);
 
 const response = await fetch("http://localhost:8000/registrar-requerimiento", {
@@ -164,8 +183,21 @@ console.log(data);
 ### Ejemplo 2: JavaScript con FormData (con audio)
 
 ```javascript
-const coords = JSON.stringify({ lat: 3.4516, lng: -76.532 });
+const coords = JSON.stringify({
+  type: "Point",
+  coordinates: [-76.532, 3.4516],
+});
 const organismos = JSON.stringify(["DAGMA", "Secretaría de Obras"]);
+const datosSolicitante = JSON.stringify({
+  personas: [
+    {
+      nombre: "María López García",
+      email: "maria.lopez@example.com",
+      telefono: "+57 300 1234567",
+      centro_gestor: "DAGMA",
+    },
+  ],
+});
 
 // Obtener archivo de audio desde un input
 const audioInput = document.getElementById("audio-input");
@@ -173,16 +205,10 @@ const audioFile = audioInput.files[0];
 
 const formData = new FormData();
 formData.append("vid", "VID-1");
-formData.append("centro_gestor_solicitante", "DAGMA");
-formData.append("solicitante_contacto", "María López García");
+formData.append("datos_solicitante", datosSolicitante);
 formData.append("requerimiento", "Solicitud de mejoramiento vial");
 formData.append("observaciones", "Vía en mal estado");
-formData.append("direccion", "Calle 5 # 40-20");
-formData.append("barrio_vereda", "San Fernando");
-formData.append("comuna_corregimiento", "Comuna 3");
 formData.append("coords", coords);
-formData.append("telefono", "+57 300 1234567");
-formData.append("email_solicitante", "maria.lopez@example.com");
 formData.append("organismos_encargados", organismos);
 
 // Agregar archivo de audio
@@ -205,21 +231,20 @@ console.log(data);
 import requests
 import json
 
-coords = json.dumps({"lat": 3.4516, "lng": -76.5320})
+coords = json.dumps({"type": "Point", "coordinates": [-76.5320, 3.4516]})
 organismos = json.dumps(["DAGMA", "Secretaría de Obras"])
+datos_solicitante = json.dumps({
+    "personas": [
+        {"nombre": "María López García", "email": "maria.lopez@example.com", "telefono": "+57 300 1234567", "centro_gestor": "DAGMA"}
+    ]
+})
 
 data = {
     "vid": "VID-1",
-    "centro_gestor_solicitante": "DAGMA",
-    "solicitante_contacto": "María López García",
+    "datos_solicitante": datos_solicitante,
     "requerimiento": "Solicitud de mejoramiento vial",
     "observaciones": "Vía en mal estado",
-    "direccion": "Calle 5 # 40-20",
-    "barrio_vereda": "San Fernando",
-    "comuna_corregimiento": "Comuna 3",
     "coords": coords,
-    "telefono": "+57 300 1234567",
-    "email_solicitante": "maria.lopez@example.com",
     "organismos_encargados": organismos
 }
 
@@ -242,16 +267,10 @@ print(response.json())
 ```bash
 curl -X POST "http://localhost:8000/registrar-requerimiento" \
   -F "vid=VID-1" \
-  -F "centro_gestor_solicitante=DAGMA" \
-  -F "solicitante_contacto=María López García" \
+  -F 'datos_solicitante={"personas": [{"nombre": "María López García", "email": "maria.lopez@example.com", "telefono": "+57 300 1234567", "centro_gestor": "DAGMA"}]}' \
   -F "requerimiento=Solicitud de mejoramiento vial" \
   -F "observaciones=Vía en mal estado" \
-  -F "direccion=Calle 5 # 40-20" \
-  -F "barrio_vereda=San Fernando" \
-  -F "comuna_corregimiento=Comuna 3" \
-  -F 'coords={"lat": 3.4516, "lng": -76.5320}' \
-  -F "telefono=+57 300 1234567" \
-  -F "email_solicitante=maria.lopez@example.com" \
+  -F 'coords={"type": "Point", "coordinates": [-76.5320, 3.4516]}' \
   -F 'organismos_encargados=["DAGMA", "Secretaría de Obras"]' \
   -F "nota_voz=@audio.mp3"
 ```
@@ -287,7 +306,7 @@ allowed_audio_types = [
 
 ### 3. Validación de Email
 
-- Se debe enviar un email válido en formato estándar
+- Eliminada — los datos de contacto van dentro del campo `datos_solicitante`
 
 ### 4. Validación de Organismos Encargados
 
@@ -307,21 +326,26 @@ allowed_audio_types = [
   "vid": "VID-1",
   "rid": "REQ-1",
   "rid_number": 1,
-  "centro_gestor_solicitante": "DAGMA",
-  "solicitante_contacto": "María López García",
+  "datos_solicitante": {
+    "personas": [
+      {
+        "nombre": "María López",
+        "email": "maria@example.com",
+        "telefono": "+57 300 1234567",
+        "centro_gestor": "DAGMA"
+      }
+    ]
+  },
   "requerimiento": "Solicitud de mejoramiento vial",
   "observaciones": "Vía en mal estado",
-  "direccion": "Calle 5 # 40-20",
-  "barrio_vereda": "San Fernando",
-  "comuna_corregimiento": "Comuna 3",
+  "barrio_vereda": "San Pedro",
+  "comuna_corregimiento": "COMUNA 03",
   "coords": {
-    "lat": 3.4516,
-    "lng": -76.532
+    "type": "Point",
+    "coordinates": [-76.532, 3.4516]
   },
   "estado": "Pendiente",
   "nota_voz_url": "https://...",
-  "telefono": "+57 300 1234567",
-  "email_solicitante": "maria.lopez@example.com",
   "fecha_registro": "2026-02-06T15:30:45.123456",
   "organismos_encargados": ["DAGMA", "Secretaría de Obras"],
   "created_at": "2026-02-06T15:30:45.123456",

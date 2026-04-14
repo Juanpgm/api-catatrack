@@ -14,22 +14,21 @@ def test_registrar_requerimiento_sin_audio():
     """
     print("\n=== Prueba 1: Registrar requerimiento SIN nota de voz ===")
     
-    # Preparar datos
-    coords = json.dumps({"lat": 3.4516, "lng": -76.5320})
+    # Coordenadas en formato GeoJSON Point (punto dentro de Cali)
+    coords = json.dumps({"type": "Point", "coordinates": [-76.5320, 3.4516]})
     organismos = json.dumps(["DAGMA", "Secretaría de Obras Públicas", "Planeación Municipal"])
+    datos_solicitante = json.dumps({
+        "personas": [
+            {"nombre": "María López García", "email": "maria.lopez@example.com", "telefono": "+57 300 1234567", "centro_gestor": "DAGMA"}
+        ]
+    })
     
     data = {
         "vid": "VID-1",
-        "centro_gestor_solicitante": "DAGMA",
-        "solicitante_contacto": "María López García",
+        "datos_solicitante": datos_solicitante,
         "requerimiento": "Solicitud de mejoramiento vial en la Calle 5",
         "observaciones": "La vía presenta baches profundos que dificultan el tránsito vehicular",
-        "direccion": "Calle 5 # 40-20",
-        "barrio_vereda": "San Fernando",
-        "comuna_corregimiento": "Comuna 3",
         "coords": coords,
-        "telefono": "+57 300 1234567",
-        "email_solicitante": "maria.lopez@example.com",
         "organismos_encargados": organismos
     }
     
@@ -44,6 +43,9 @@ def test_registrar_requerimiento_sin_audio():
         print(f"Response: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
         
         if response.status_code == 200:
+            result = response.json()
+            print(f"  barrio_vereda (auto): {result.get('barrio_vereda')}")
+            print(f"  comuna_corregimiento (auto): {result.get('comuna_corregimiento')}")
             print("✅ Prueba exitosa!")
         else:
             print("❌ Prueba falló")
@@ -58,27 +60,25 @@ def test_registrar_requerimiento_con_audio():
     """
     print("\n=== Prueba 2: Registrar requerimiento CON nota de voz ===")
     
-    # Preparar datos
-    coords = json.dumps({"lat": 3.4516, "lng": -76.5320})
+    coords = json.dumps({"type": "Point", "coordinates": [-76.5320, 3.4516]})
     organismos = json.dumps(["DAGMA", "Alcaldía Municipal"])
+    datos_solicitante = json.dumps({
+        "personas": [
+            {"nombre": "Juan Pérez", "email": "juan.perez@example.com", "telefono": "+57 310 9876543"},
+            {"nombre": "Ana Gómez", "email": "ana.gomez@example.com", "centro_gestor": "Secretaría de Salud"}
+        ]
+    })
     
     data = {
         "vid": "VID-1",
-        "centro_gestor_solicitante": "Secretaría de Salud",
-        "solicitante_contacto": "Juan Pérez",
+        "datos_solicitante": datos_solicitante,
         "requerimiento": "Solicitud de fumigación en zona verde",
         "observaciones": "Presencia de mosquitos y plagas en el parque",
-        "direccion": "Carrera 10 # 25-30",
-        "barrio_vereda": "El Poblado",
-        "comuna_corregimiento": "Comuna 5",
         "coords": coords,
-        "telefono": "+57 310 9876543",
-        "email_solicitante": "juan.perez@example.com",
         "organismos_encargados": organismos
     }
     
     # Crear un archivo de audio de prueba (simulado)
-    # En producción, aquí usarías un archivo de audio real
     audio_content = b"fake audio content for testing"
     files = {
         "nota_voz": ("test_audio.mp3", audio_content, "audio/mpeg")
@@ -111,21 +111,16 @@ def test_validaciones():
     print("\n=== Prueba 3: Validaciones (coords inválidas) ===")
     
     # Coordenadas inválidas (fuera de rango)
-    coords_invalidas = json.dumps({"lat": 95.0, "lng": 200.0})
+    coords_invalidas = json.dumps({"type": "Point", "coordinates": [200.0, 95.0]})
     organismos = json.dumps(["DAGMA"])
+    datos_solicitante = json.dumps({"personas": [{"nombre": "Test Usuario"}]})
     
     data = {
         "vid": "VID-1",
-        "centro_gestor_solicitante": "DAGMA",
-        "solicitante_contacto": "Test Usuario",
+        "datos_solicitante": datos_solicitante,
         "requerimiento": "Test",
         "observaciones": "Test",
-        "direccion": "Test",
-        "barrio_vereda": "Test",
-        "comuna_corregimiento": "Test",
         "coords": coords_invalidas,
-        "telefono": "123456",
-        "email_solicitante": "test@test.com",
         "organismos_encargados": organismos
     }
     
@@ -154,23 +149,18 @@ def test_rid_incremental():
     """
     print("\n=== Prueba 4: Incremento automático de RID ===")
     
-    coords = json.dumps({"lat": 3.4516, "lng": -76.5320})
+    coords = json.dumps({"type": "Point", "coordinates": [-76.5320, 3.4516]})
     organismos = json.dumps(["DAGMA"])
+    datos_solicitante = json.dumps({"personas": [{"nombre": "Usuario Test"}]})
     
     # Crear 3 requerimientos para la misma visita
     for i in range(1, 4):
         data = {
             "vid": "VID-TEST",
-            "centro_gestor_solicitante": "DAGMA",
-            "solicitante_contacto": f"Usuario Test {i}",
+            "datos_solicitante": datos_solicitante,
             "requerimiento": f"Requerimiento de prueba {i}",
             "observaciones": f"Observación {i}",
-            "direccion": f"Dirección {i}",
-            "barrio_vereda": "Test",
-            "comuna_corregimiento": "Test",
             "coords": coords,
-            "telefono": "123456",
-            "email_solicitante": f"test{i}@test.com",
             "organismos_encargados": organismos
         }
         

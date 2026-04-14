@@ -1,7 +1,7 @@
 """
 Rutas para gestión de Artefacto de Captura DAGMA
 """
-from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query
+from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Body
 from typing import List, Optional
 from datetime import datetime
 import json
@@ -11,6 +11,7 @@ import os
 import io
 from pydantic import BaseModel, Field
 import httpx
+from shapely.geometry import shape, Point
 
 # Importar configuración de Firebase y S3/Storage
 from app.firebase_config import db
@@ -112,17 +113,86 @@ def get_s3_client():
     )
 
 
+# ==================== GEOLOCALIZACIÓN ====================#
+# Cargar basemaps en memoria al iniciar el módulo
+def _load_basemap(filepath: str, property_name: str) -> list:
+    """Carga un GeoJSON y retorna lista de tuplas (polygon_shape, property_value)"""
+    basemap_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), filepath)
+    try:
+        with open(basemap_path, 'r', encoding='utf-8') as f:
+            geojson_data = json.load(f)
+        polygons = []
+        for feature in geojson_data.get('features', []):
+            try:
+                geom = shape(feature['geometry'])
+                value = feature['properties'].get(property_name)
+                polygons.append((geom, value))
+            except Exception:
+                continue
+        print(f"✅ Basemap '{filepath}' cargado: {len(polygons)} polígonos")
+        return polygons
+    except Exception as e:
+        print(f"⚠️ Error cargando basemap '{filepath}': {str(e)}")
+        return []
+
+_BARRIOS_POLYGONS = _load_basemap('basemaps/barrios_veredas.geojson', 'barrio_vereda')
+_COMUNAS_POLYGONS = _load_basemap('basemaps/comunas_corregimientos.geojson', 'comuna_corregimiento')
+
+
+def geolocate_point(lon: float, lat: float) -> dict:
+    """
+    Realiza intersección geográfica de un punto con los polígonos de barrios/veredas
+    y comunas/corregimientos.
+    Retorna dict con 'barrio_vereda' y 'comuna_corregimiento' (None si no intersecta).
+    """
+    point = Point(lon, lat)
+    result = {"barrio_vereda": None, "comuna_corregimiento": None}
+    
+    for polygon, name in _BARRIOS_POLYGONS:
+        if polygon.contains(point):
+            result["barrio_vereda"] = name
+            break
+    
+    for polygon, name in _COMUNAS_POLYGONS:
+        if polygon.contains(point):
+            result["comuna_corregimiento"] = name
+            break
+    
+    return result
+
+
 # ==================== MODELOS ====================#
+class AcompananteModel(BaseModel):
+    """Modelo para datos de acompañante"""
+    nombre_completo: str
+    telefono: str
+    email: str
+    centro_gestor: str
+
+
+class RegistroVisitaRequest(BaseModel):
+    """Modelo de solicitud para registro de visitas"""
+    barrio_vereda: str = Field(..., min_length=1, description="Nombre del barrio o vereda")
+    comuna_corregimiento: str = Field(..., min_length=1, description="Comuna o corregimiento")
+    descripcion_visita: str = Field(..., min_length=1, description="Descripción de la visita")
+    observaciones_visita: str = Field(..., min_length=1, description="Observaciones de la visita")
+    acompanantes: AcompananteModel = Field(..., description="Datos del acompañante")
+    fecha_visita: str = Field(..., description="Fecha de la visita en formato dd/mm/aaaa")
+    hora_visita: str = Field(..., description="Hora de la visita en formato HH:mm (hora Bogotá)")
+
+
 class RegistroVisitaResponse(BaseModel):
     """Modelo de respuesta para registro de visitas"""
     success: bool
     vid: str
     message: str
-    nombre_up: str
-    nombre_up_detalle: str
     barrio_vereda: str
     comuna_corregimiento: str
+    descripcion_visita: str
+    observaciones_visita: str
+    acompanantes: dict
     fecha_visita: str
+    hora_visita: str
     timestamp: str
 
 
@@ -168,19 +238,15 @@ class RegistroRequerimientoResponse(BaseModel):
     vid: str
     rid: str
     message: str
-    centro_gestor_solicitante: str
-    solicitante_contacto: str
+    datos_solicitante: dict
+    tipo_requerimiento: str
     requerimiento: str
     observaciones: str
-    direccion: str
-    barrio_vereda: str
-    comuna_corregimiento: str
-    latitud: str
-    longitud: str
+    barrio_vereda: Optional[str]
+    comuna_corregimiento: Optional[str]
+    coords: dict
     estado: str
     nota_voz_url: Optional[str]
-    telefono: str
-    email_solicitante: str
     fecha_registro: str
     organismos_encargados: List[str]
     timestamp: str
@@ -234,32 +300,41 @@ async def get_init_unidades_proyecto():
     description="""
 ## 🟢 POST | Registro de Visita
 
-**Propósito**: Registrar una visita realizada con información de la unidad de proyecto,
-detalles de ubicación y fecha de la visita.
+**Propósito**: Registrar una visita realizada con información de ubicación,
+descripción, observaciones, acompañantes y fecha/hora.
 
 ### ✅ Campos requeridos:
-- **nombre_up**: Nombre de la unidad de proyecto (texto)
-- **nombre_up_detalle**: Detalle del nombre de la unidad de proyecto (texto)
 - **barrio_vereda**: Nombre del barrio o vereda (texto)
 - **comuna_corregimiento**: Comuna o corregimiento (texto)
-- **fecha_visita**: Fecha de la visita en formato timestamp (número)
+- **descripcion_visita**: Descripción de la visita (texto)
+- **observaciones_visita**: Observaciones de la visita (texto)
+- **acompanantes**: JSON con datos del acompañante: {"nombre_completo", "telefono", "email", "centro_gestor"}
+- **fecha_visita**: Fecha de la visita en formato dd/mm/aaaa
+- **hora_visita**: Hora de la visita en formato HH:mm (hora de Bogotá, Colombia)
 
 ### 🔢 VID (ID de Visita):
 El sistema genera automáticamente un ID único con formato **VID-#** donde # es un 
 consecutivo incremental. Ejemplo: VID-1, VID-2, VID-3...
 
-### 📝 Ejemplo de uso con FormData:
+### 📝 Ejemplo de uso con JSON:
 ```javascript
-const formData = new FormData();
-formData.append('nombre_up', 'Unidad Centro');
-formData.append('nombre_up_detalle', 'Zona Centro - Área 1');
-formData.append('barrio_vereda', 'San Fernando');
-formData.append('comuna_corregimiento', 'Comuna 3');
-formData.append('fecha_visita', Date.now().toString());
-
 const response = await fetch('/registrar-visita/', {
     method: 'POST',
-    body: formData
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        barrio_vereda: 'San Fernando',
+        comuna_corregimiento: 'Comuna 3',
+        descripcion_visita: 'Visita de inspección ambiental',
+        observaciones_visita: 'Se encontraron residuos sólidos en la zona',
+        acompanantes: {
+            nombre_completo: 'Juan Pérez',
+            telefono: '3001234567',
+            email: 'juan@example.com',
+            centro_gestor: 'Centro Gestor Norte'
+        },
+        fecha_visita: '13/04/2026',
+        hora_visita: '14:30'
+    })
 });
 ```
 
@@ -269,86 +344,105 @@ const response = await fetch('/registrar-visita/', {
     "success": true,
     "vid": "VID-1",
     "message": "Visita registrada exitosamente",
-    "nombre_up": "Unidad Centro",
-    "nombre_up_detalle": "Zona Centro - Área 1",
     "barrio_vereda": "San Fernando",
     "comuna_corregimiento": "Comuna 3",
-    "fecha_visita": "2026-02-06T10:30:00Z",
-    "timestamp": "2026-02-06T10:30:00Z"
+    "descripcion_visita": "Visita de inspección ambiental",
+    "observaciones_visita": "Se encontraron residuos sólidos en la zona",
+    "acompanantes": {
+        "nombre_completo": "Juan Pérez",
+        "telefono": "3001234567",
+        "email": "juan@example.com",
+        "centro_gestor": "Centro Gestor Norte"
+    },
+    "fecha_visita": "13/04/2026",
+    "hora_visita": "14:30",
+    "timestamp": "2026-04-13T19:30:00Z"
 }
 ```
     """,
     response_model=RegistroVisitaResponse
 )
-async def post_registro_visita(
-    nombre_up: str = Form(..., min_length=1, description="Nombre de la unidad de proyecto"),
-    nombre_up_detalle: str = Form(..., min_length=1, description="Detalle del nombre de la unidad de proyecto"),
-    barrio_vereda: str = Form(..., min_length=1, description="Nombre del barrio o vereda"),
-    comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
-    fecha_visita: str = Form(..., description="Fecha de la visita en formato timestamp")
-):
+async def post_registro_visita(payload: RegistroVisitaRequest):
     """
-    Registrar una visita con información de la unidad de proyecto
+    Registrar una visita con información de ubicación, descripción, acompañantes y fecha/hora
     """
+    import re
+
     try:
-        # Validar y convertir fecha_visita (acepta YYYY-MM-DD o timestamp numérico)
-        try:
-            # Intentar parsear como fecha YYYY-MM-DD primero
-            try:
-                fecha_visita_dt = datetime.strptime(fecha_visita, "%Y-%m-%d")
-            except ValueError:
-                # Si no es fecha, intentar como timestamp numérico
-                timestamp_int = int(fecha_visita)
-                # Si es timestamp en milisegundos, convertir a segundos
-                if timestamp_int > 10000000000:
-                    timestamp_int = timestamp_int // 1000
-                fecha_visita_dt = datetime.fromtimestamp(timestamp_int)
-        except (ValueError, TypeError) as e:
+        barrio_vereda = payload.barrio_vereda
+        comuna_corregimiento = payload.comuna_corregimiento
+        descripcion_visita = payload.descripcion_visita
+        observaciones_visita = payload.observaciones_visita
+        acompanantes = payload.acompanantes
+        fecha_visita = payload.fecha_visita
+        hora_visita = payload.hora_visita
+
+        # Validar formato fecha_visita dd/mm/aaaa
+        if not re.match(r'^\d{2}/\d{2}/\d{4}$', fecha_visita):
             raise HTTPException(
                 status_code=400,
-                detail=f"Formato de fecha_visita inválido. Debe ser YYYY-MM-DD o timestamp numérico: {str(e)}"
+                detail="Formato de fecha_visita inválido. Debe ser dd/mm/aaaa (ejemplo: 13/04/2026)"
             )
-        
+        try:
+            datetime.strptime(fecha_visita, "%d/%m/%Y")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Fecha inválida: {fecha_visita}. Verifique que sea una fecha real en formato dd/mm/aaaa"
+            )
+
+        # Validar formato hora_visita HH:mm
+        if not re.match(r'^\d{2}:\d{2}$', hora_visita):
+            raise HTTPException(
+                status_code=400,
+                detail="Formato de hora_visita inválido. Debe ser HH:mm (ejemplo: 14:30)"
+            )
+        try:
+            datetime.strptime(hora_visita, "%H:%M")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Hora inválida: {hora_visita}. Verifique que sea una hora real en formato HH:mm"
+            )
+
         # Generar VID con consecutivo incremental
         try:
-            # Obtener el último VID de la colección
-            visitas_ref = db.collection('visitas_dagma')
-            # Ordenar por VID descendente y obtener el primero
+            visitas_ref = db.collection('visitas')
             last_visita = visitas_ref.order_by('vid_number', direction='DESCENDING').limit(1).get()
-            
+
             if len(last_visita) > 0:
-                # Extraer el número del último VID
                 last_vid_number = last_visita[0].to_dict().get('vid_number', 0)
                 new_vid_number = last_vid_number + 1
             else:
-                # Primera visita
                 new_vid_number = 1
-            
+
             vid = f"VID-{new_vid_number}"
-            
+
         except Exception as e:
             print(f"❌ Error generando VID: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error generando VID: {str(e)}"
             )
-        
+
         # Preparar datos para guardar en Firebase
         visita_data = {
             "vid": vid,
             "vid_number": new_vid_number,
-            "nombre_up": nombre_up,
-            "nombre_up_detalle": nombre_up_detalle,
             "barrio_vereda": barrio_vereda,
             "comuna_corregimiento": comuna_corregimiento,
-            "fecha_visita": fecha_visita_dt.isoformat(),
+            "descripcion_visita": descripcion_visita,
+            "observaciones_visita": observaciones_visita,
+            "acompanantes": acompanantes.model_dump(),
+            "fecha_visita": fecha_visita,
+            "hora_visita": hora_visita,
             "created_at": datetime.utcnow().isoformat(),
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
         # Guardar en Firebase
         try:
-            db.collection('visitas_dagma').document(vid).set(visita_data)
+            db.collection('visitas').document(vid).set(visita_data)
             print(f"✅ Visita {vid} guardada en Firebase")
         except Exception as e:
             print(f"❌ Error guardando en Firebase: {str(e)}")
@@ -356,19 +450,21 @@ async def post_registro_visita(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
             )
-        
+
         return RegistroVisitaResponse(
             success=True,
             vid=vid,
             message="Visita registrada exitosamente",
-            nombre_up=nombre_up,
-            nombre_up_detalle=nombre_up_detalle,
             barrio_vereda=barrio_vereda,
             comuna_corregimiento=comuna_corregimiento,
-            fecha_visita=fecha_visita_dt.isoformat(),
+            descripcion_visita=descripcion_visita,
+            observaciones_visita=observaciones_visita,
+            acompanantes=acompanantes.model_dump(),
+            fecha_visita=fecha_visita,
+            hora_visita=hora_visita,
             timestamp=datetime.utcnow().isoformat()
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -818,22 +914,18 @@ async def post_registrar_asistencia_comunidad(
     description="""
 ## 🟢 POST | Registrar Requerimiento
 
-**Propósito**: Registrar un nuevo requerimiento con información del solicitante,
-ubicación GPS, estado, nota de voz opcional y organismos encargados.
+**Propósito**: Registrar un nuevo requerimiento con datos del solicitante,
+coordenadas GPS del dispositivo, nota de voz opcional y organismos encargados.
+El sistema determina automáticamente el barrio/vereda y comuna/corregimiento
+mediante intersección geográfica con los basemaps.
 
 ### ✅ Campos requeridos:
 - **vid**: ID de la visita (texto)
-- **centro_gestor_solicitante**: Centro gestor del solicitante (texto)
-- **solicitante_contacto**: Nombre del contacto solicitante (texto)
+- **datos_solicitante**: Datos del solicitante en formato JSON string (diccionario con datos de una o más personas)
 - **requerimiento**: Descripción del requerimiento (texto)
 - **observaciones**: Observaciones adicionales (texto)
-- **direccion**: Dirección del requerimiento (texto)
-- **barrio_vereda**: Barrio o vereda (texto)
-- **comuna_corregimiento**: Comuna o corregimiento (texto)
-- **coords**: Coordenadas GPS en formato JSON string {"lat": number, "lng": number}
-- **telefono**: Número de teléfono de contacto (texto)
-- **email_solicitante**: Correo electrónico del solicitante (texto)
-- **organismos_encargados**: Lista de nombres de centros gestores en formato JSON array ["nombre1", "nombre2"]
+- **coords**: Coordenadas GPS en formato GeoJSON Point string `{"type": "Point", "coordinates": [lng, lat]}`
+- **organismos_encargados**: Lista de nombres de centros gestores en formato JSON array `["nombre1", "nombre2"]`
 
 ### 📥 Campos opcionales:
 - **nota_voz**: Archivo de audio (opcional)
@@ -846,9 +938,22 @@ consecutivo incremental dentro de cada visita. Ejemplo: REQ-1, REQ-2, REQ-3...
 Por defecto, el registro se crea con estado "Pendiente".
 
 ### 📍 Coordenadas GPS:
-Debes enviar las coordenadas como un string JSON con el formato:
+Debes enviar las coordenadas como un string JSON en formato GeoJSON Point:
 ```json
-{"lat": 3.4516, "lng": -76.5320}
+{"type": "Point", "coordinates": [-76.5320, 3.4516]}
+```
+El sistema automáticamente determinará el barrio/vereda y la comuna/corregimiento
+correspondientes usando intersección geográfica.
+
+### 👤 Datos del Solicitante:
+Se envía como un diccionario JSON que puede contener datos de una o más personas:
+```json
+{
+    "personas": [
+        {"nombre": "María López", "email": "maria@example.com", "telefono": "+57 300 1234567", "centro_gestor": "DAGMA"},
+        {"nombre": "Juan Pérez", "email": "juan@example.com", "telefono": "+57 310 9876543"}
+    ]
+}
 ```
 
 ### 🎤 Nota de Voz:
@@ -856,21 +961,20 @@ Si se incluye un archivo de audio, este se sube a S3 y se retorna la URL.
 
 ### 📝 Ejemplo de uso con FormData:
 ```javascript
-const coords = JSON.stringify({lat: 3.4516, lng: -76.5320});
+const coords = JSON.stringify({type: "Point", coordinates: [-76.5320, 3.4516]});
 const organismos = JSON.stringify(["DAGMA", "Secretaría de Obras"]);
+const datosSolicitante = JSON.stringify({
+    personas: [
+        {nombre: "María López", email: "maria@example.com", telefono: "+57 300 1234567", centro_gestor: "DAGMA"}
+    ]
+});
 
 const formData = new FormData();
 formData.append('vid', 'VID-1');
-formData.append('centro_gestor_solicitante', 'DAGMA');
-formData.append('solicitante_contacto', 'María López');
+formData.append('datos_solicitante', datosSolicitante);
 formData.append('requerimiento', 'Solicitud de mejoramiento vial');
 formData.append('observaciones', 'Urgente, vía en mal estado');
-formData.append('direccion', 'Calle 5 # 40-20');
-formData.append('barrio_vereda', 'San Fernando');
-formData.append('comuna_corregimiento', 'Comuna 3');
 formData.append('coords', coords);
-formData.append('telefono', '+57 300 1234567');
-formData.append('email_solicitante', 'maria.lopez@example.com');
 formData.append('organismos_encargados', organismos);
 
 // Archivo de audio opcional
@@ -891,18 +995,14 @@ const response = await fetch('/registrar-requerimiento', {
     "vid": "VID-1",
     "rid": "REQ-1",
     "message": "Requerimiento registrado exitosamente",
-    "centro_gestor_solicitante": "DAGMA",
-    "solicitante_contacto": "María López",
+    "datos_solicitante": {"personas": [{"nombre": "María López", "email": "maria@example.com"}]},
     "requerimiento": "Solicitud de mejoramiento vial",
     "observaciones": "Urgente, vía en mal estado",
-    "direccion": "Calle 5 # 40-20",
     "barrio_vereda": "San Fernando",
-    "comuna_corregimiento": "Comuna 3",
-    "coords": {"lat": 3.4516, "lng": -76.5320},
+    "comuna_corregimiento": "COMUNA 03",
+    "coords": {"type": "Point", "coordinates": [-76.5320, 3.4516]},
     "estado": "Pendiente",
     "nota_voz_url": "https://s3.amazonaws.com/bucket/audio.mp3",
-    "telefono": "+57 300 1234567",
-    "email_solicitante": "maria.lopez@example.com",
     "fecha_registro": "2026-02-06T15:30:45.123456",
     "organismos_encargados": ["DAGMA", "Secretaría de Obras"],
     "timestamp": "2026-02-06T15:30:45.123456"
@@ -913,46 +1013,70 @@ const response = await fetch('/registrar-requerimiento', {
 )
 async def post_registrar_requerimiento(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
-    centro_gestor_solicitante: str = Form(..., min_length=1, description="Centro gestor del solicitante"),
-    solicitante_contacto: str = Form(..., min_length=1, description="Nombre del contacto solicitante"),
+    datos_solicitante: str = Form(..., min_length=1, description="Datos del solicitante en formato JSON (diccionario con datos de una o más personas)"),
+    tipo_requerimiento: str = Form(..., min_length=1, description="Tipo de requerimiento"),
     requerimiento: str = Form(..., min_length=1, description="Descripción del requerimiento"),
     observaciones: str = Form(..., min_length=1, description="Observaciones adicionales"),
-    direccion: str = Form(..., min_length=1, description="Dirección del requerimiento"),
-    barrio_vereda: str = Form(..., min_length=1, description="Barrio o vereda"),
-    comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
-    latitud: str = Form(..., description="Latitud GPS"),
-    longitud: str = Form(..., description="Longitud GPS"),
-    telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
-    email_solicitante: str = Form(..., min_length=1, description="Correo electrónico del solicitante"),
+    coords: str = Form(..., description='Coordenadas GPS en formato GeoJSON Point: {"type": "Point", "coordinates": [lng, lat]}'),
     organismos_encargados: str = Form(..., description="Lista de nombres de centros gestores en formato JSON array"),
     nota_voz: Optional[UploadFile] = File(None, description="Archivo de audio opcional")
 ):
     """
-    Registrar un nuevo requerimiento con información del solicitante y ubicación GPS
+    Registrar un nuevo requerimiento con datos del solicitante y coordenadas GPS.
+    El barrio/vereda y comuna/corregimiento se determinan automáticamente por intersección geográfica.
     """
     try:
-        # Validar coordenadas GPS
+        # Parsear datos del solicitante
         try:
-            lat = float(latitud)
-            lng = float(longitud)
-
+            datos_solicitante_dict = json.loads(datos_solicitante)
+            if not isinstance(datos_solicitante_dict, dict):
+                raise ValueError("datos_solicitante debe ser un diccionario JSON")
+            if len(datos_solicitante_dict) == 0:
+                raise ValueError("datos_solicitante no puede estar vacío")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato de datos_solicitante inválido. Debe ser un diccionario JSON no vacío: {str(e)}"
+            )
+        
+        # Parsear coordenadas GPS en formato GeoJSON Point
+        try:
+            coords_dict = json.loads(coords)
+            if not isinstance(coords_dict, dict):
+                raise ValueError("coords debe ser un objeto JSON")
+            if coords_dict.get('type') != 'Point':
+                raise ValueError("coords debe ser de tipo GeoJSON Point (type: 'Point')")
+            coordinates = coords_dict.get('coordinates')
+            if not isinstance(coordinates, list) or len(coordinates) != 2:
+                raise ValueError("coordinates debe ser un array de 2 elementos [lng, lat]")
+            
+            lng = float(coordinates[0])
+            lat = float(coordinates[1])
+            
             if not (-90 <= lat <= 90):
                 raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
             if not (-180 <= lng <= 180):
                 raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
-
-        except ValueError as e:
+            
+            # Normalizar coords con valores validados
+            coords_dict = {"type": "Point", "coordinates": [lng, lat]}
+            
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Error en coordenadas: {str(e)}"
+                detail=f'Formato de coords inválido. Debe ser GeoJSON Point: {{"type": "Point", "coordinates": [lng, lat]}}. Error: {str(e)}'
             )
+        
+        # Geolocalización automática: intersección con basemaps
+        geo_result = geolocate_point(lng, lat)
+        barrio_vereda = geo_result["barrio_vereda"]
+        comuna_corregimiento = geo_result["comuna_corregimiento"]
         
         # Parsear organismos encargados
         try:
             organismos_list = json.loads(organismos_encargados)
             if not isinstance(organismos_list, list):
                 raise ValueError("organismos_encargados debe ser un array")
-            # Validar que todos los elementos sean strings
             organismos_list = [str(org) for org in organismos_list]
         except (json.JSONDecodeError, ValueError) as e:
             raise HTTPException(
@@ -962,17 +1086,13 @@ async def post_registrar_requerimiento(
         
         # Generar RID con consecutivo incremental dentro de cada visita
         try:
-            # Obtener todos los requerimientos de esta visita
             requerimientos_ref = db.collection('requerimientos_dagma')
-            # Filtrar por vid y ordenar por rid_number
             requerimientos_visita = requerimientos_ref.where('vid', '==', vid).order_by('rid_number', direction='DESCENDING').limit(1).get()
             
             if len(requerimientos_visita) > 0:
-                # Extraer el número del último RID de esta visita
                 last_rid_number = requerimientos_visita[0].to_dict().get('rid_number', 0)
                 new_rid_number = last_rid_number + 1
             else:
-                # Primer requerimiento de esta visita
                 new_rid_number = 1
             
             rid = f"REQ-{new_rid_number}"
@@ -988,19 +1108,14 @@ async def post_registrar_requerimiento(
         nota_voz_url = None
         if nota_voz and nota_voz.filename:
             try:
-                # Validar tipo de archivo de audio
                 allowed_audio_types = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/webm", "audio/m4a", "audio/x-m4a"]
                 if nota_voz.content_type not in allowed_audio_types:
                     raise ValueError(f"Tipo de archivo no permitido: {nota_voz.content_type}. Permitidos: {', '.join(allowed_audio_types)}")
                 
-                # Leer contenido del archivo
                 audio_content = await nota_voz.read()
-                
-                # Generar nombre único para el archivo
                 audio_extension = os.path.splitext(nota_voz.filename)[1] or '.mp3'
                 audio_filename = f"requerimientos/{vid}/{rid}/nota_voz_{uuid.uuid4().hex}{audio_extension}"
                 
-                # Subir a S3
                 s3_client = get_s3_client()
                 bucket_name = os.getenv('AWS_S3_BUCKET_NAME', '360-dagma-photos')
                 
@@ -1011,13 +1126,11 @@ async def post_registrar_requerimiento(
                     ContentType=nota_voz.content_type
                 )
                 
-                # Generar URL del archivo
                 nota_voz_url = f"https://{bucket_name}.s3.amazonaws.com/{audio_filename}"
                 print(f"✅ Nota de voz subida a S3: {nota_voz_url}")
                 
             except Exception as e:
                 print(f"⚠️ Advertencia: Error subiendo nota de voz: {str(e)}")
-                # No falla el registro si hay error con el audio
         
         # Capturar fecha y hora de registro
         fecha_registro = datetime.utcnow()
@@ -1030,19 +1143,15 @@ async def post_registrar_requerimiento(
             "vid": vid,
             "rid": rid,
             "rid_number": new_rid_number,
-            "centro_gestor_solicitante": centro_gestor_solicitante,
-            "solicitante_contacto": solicitante_contacto,
+            "datos_solicitante": datos_solicitante_dict,
+            "tipo_requerimiento": tipo_requerimiento,
             "requerimiento": requerimiento,
             "observaciones": observaciones,
-            "direccion": direccion,
             "barrio_vereda": barrio_vereda,
             "comuna_corregimiento": comuna_corregimiento,
-            "latitud": latitud,
-            "longitud": longitud,
+            "coords": coords_dict,
             "estado": "Pendiente",
             "nota_voz_url": nota_voz_url,
-            "telefono": telefono,
-            "email_solicitante": email_solicitante,
             "fecha_registro": fecha_registro.isoformat(),
             "organismos_encargados": organismos_list,
             "created_at": datetime.utcnow().isoformat(),
@@ -1065,19 +1174,15 @@ async def post_registrar_requerimiento(
             vid=vid,
             rid=rid,
             message="Requerimiento registrado exitosamente",
-            centro_gestor_solicitante=centro_gestor_solicitante,
-            solicitante_contacto=solicitante_contacto,
+            datos_solicitante=datos_solicitante_dict,
+            tipo_requerimiento=tipo_requerimiento,
             requerimiento=requerimiento,
             observaciones=observaciones,
-            direccion=direccion,
             barrio_vereda=barrio_vereda,
             comuna_corregimiento=comuna_corregimiento,
-            latitud=latitud,
-            longitud=longitud,
+            coords=coords_dict,
             estado="Pendiente",
             nota_voz_url=nota_voz_url,
-            telefono=telefono,
-            email_solicitante=email_solicitante,
             fecha_registro=fecha_registro.isoformat(),
             organismos_encargados=organismos_list,
             timestamp=datetime.utcnow().isoformat()
