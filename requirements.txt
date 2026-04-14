@@ -18,6 +18,7 @@ prometheus-client==0.19.0
 slowapi==0.1.9
 
 # Geolocalización
+numpy<2
 shapely==2.0.2
 
 # Utilidades
