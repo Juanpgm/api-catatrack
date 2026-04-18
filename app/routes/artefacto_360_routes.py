@@ -652,7 +652,7 @@ async def delete_reporte(
             nota_voz_url = data.get('nota_voz_url')
             if nota_voz_url:
                 s3_client = get_s3_client()
-                bucket_name = os.getenv('AWS_S3_BUCKET_NAME', '360-dagma-photos')
+                bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
                 vid = data.get('vid', '')
                 rid = data.get('rid', '')
                 prefix = f"requerimientos/{vid}/{rid}/"
@@ -1371,7 +1371,7 @@ async def post_registrar_requerimiento(
                 audio_filename = f"requerimientos/{vid}/{rid}/nota_voz_{uuid.uuid4().hex}{audio_extension}"
                 
                 s3_client = get_s3_client()
-                bucket_name = os.getenv('AWS_S3_BUCKET_NAME', '360-dagma-photos')
+                bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
                 
                 s3_client.put_object(
                     Bucket=bucket_name,
