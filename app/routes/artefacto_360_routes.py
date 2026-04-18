@@ -9,6 +9,7 @@ import uuid
 import math
 import os
 import io
+import gzip
 from pydantic import BaseModel, Field
 import httpx
 from shapely.geometry import shape, Point
@@ -1370,7 +1371,11 @@ async def post_registrar_requerimiento(
                 
                 audio_content = await nota_voz.read()
                 audio_extension = os.path.splitext(nota_voz.filename)[1] or '.mp3'
-                audio_filename = f"requerimientos/{vid}/{rid}/nota_voz_{uuid.uuid4().hex}{audio_extension}"
+                audio_filename = f"requerimientos/{vid}/{rid}/nota_voz_{uuid.uuid4().hex}{audio_extension}.gz"
+                
+                # Comprimir con gzip para ahorrar espacio en S3
+                compressed_content = gzip.compress(audio_content)
+                print(f"📦 Compresión: {len(audio_content)} bytes → {len(compressed_content)} bytes ({100 - len(compressed_content)*100//len(audio_content)}% ahorro)")
                 
                 s3_client = get_s3_client()
                 bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
@@ -1378,8 +1383,9 @@ async def post_registrar_requerimiento(
                 s3_client.put_object(
                     Bucket=bucket_name,
                     Key=audio_filename,
-                    Body=audio_content,
-                    ContentType=nota_voz.content_type
+                    Body=compressed_content,
+                    ContentType=nota_voz.content_type,
+                    ContentEncoding='gzip'
                 )
                 
                 nota_voz_url = f"https://{bucket_name}.s3.amazonaws.com/{audio_filename}"
