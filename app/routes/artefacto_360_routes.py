@@ -242,6 +242,7 @@ class RegistroRequerimientoResponse(BaseModel):
     tipo_requerimiento: str
     requerimiento: str
     observaciones: str
+    direccion: Optional[str]
     barrio_vereda: Optional[str]
     comuna_corregimiento: Optional[str]
     coords: dict
@@ -1273,6 +1274,7 @@ async def post_registrar_requerimiento(
     observaciones: str = Form(..., min_length=1, description="Observaciones adicionales"),
     coords: str = Form(..., description='Coordenadas GPS en formato GeoJSON Point: {"type": "Point", "coordinates": [lng, lat]}'),
     organismos_encargados: str = Form(..., description="Lista de nombres de centros gestores en formato JSON array"),
+    direccion: Optional[str] = Form(None, description="Dirección del requerimiento (texto)"),
     nota_voz: Optional[UploadFile] = File(None, description="Archivo de audio opcional")
 ):
     """
@@ -1401,6 +1403,7 @@ async def post_registrar_requerimiento(
             "tipo_requerimiento": tipo_requerimiento,
             "requerimiento": requerimiento,
             "observaciones": observaciones,
+            "direccion": direccion,
             "barrio_vereda": barrio_vereda,
             "comuna_corregimiento": comuna_corregimiento,
             "coords": coords_dict,
@@ -1432,6 +1435,7 @@ async def post_registrar_requerimiento(
             tipo_requerimiento=tipo_requerimiento,
             requerimiento=requerimiento,
             observaciones=observaciones,
+            direccion=direccion,
             barrio_vereda=barrio_vereda,
             comuna_corregimiento=comuna_corregimiento,
             coords=coords_dict,
