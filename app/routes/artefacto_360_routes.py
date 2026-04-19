@@ -162,6 +162,37 @@ def geolocate_point(lon: float, lat: float) -> dict:
     return result
 
 
+async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
+    """
+    Geocodifica una dirección en Cali, Valle del Cauca usando Nominatim (OpenStreetMap).
+    Retorna dict con 'lat', 'lon', o None si no encuentra resultados.
+    """
+    query = f"{direccion}, Cali, Valle del Cauca, Colombia"
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        "q": query,
+        "format": "json",
+        "limit": 1,
+        "countrycodes": "co"
+    }
+    headers = {"User-Agent": "catatrack-api/1.0"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            results = response.json()
+        if not results:
+            print(f"⚠️ Nominatim sin resultados para: {query}")
+            return None
+        lat = float(results[0]["lat"])
+        lon = float(results[0]["lon"])
+        print(f"✅ Geocodificación: {query} → [{lon}, {lat}]")
+        return {"lat": lat, "lon": lon}
+    except Exception as e:
+        print(f"⚠️ Error geocodificando '{query}': {str(e)}")
+        return None
+
+
 # ==================== MODELOS ====================#
 class AcompananteModel(BaseModel):
     """Modelo para datos de acompañante"""
@@ -173,8 +204,7 @@ class AcompananteModel(BaseModel):
 
 class RegistroVisitaRequest(BaseModel):
     """Modelo de solicitud para registro de visitas"""
-    barrio_vereda: str = Field(..., min_length=1, description="Nombre del barrio o vereda")
-    comuna_corregimiento: str = Field(..., min_length=1, description="Comuna o corregimiento")
+    direccion_visita: str = Field(..., min_length=1, description="Dirección de la visita en Cali, Valle del Cauca")
     descripcion_visita: str = Field(..., min_length=1, description="Descripción de la visita")
     observaciones_visita: str = Field(..., min_length=1, description="Observaciones de la visita")
     acompanantes: Optional[List[AcompananteModel]] = Field(None, description="Lista de acompañantes (opcional)")
@@ -187,8 +217,10 @@ class RegistroVisitaResponse(BaseModel):
     success: bool
     vid: str
     message: str
-    barrio_vereda: str
-    comuna_corregimiento: str
+    direccion_visita: str
+    coords: Optional[dict]
+    barrio_vereda: Optional[str]
+    comuna_corregimiento: Optional[str]
     descripcion_visita: str
     observaciones_visita: str
     acompanantes: Optional[List[dict]]
@@ -382,13 +414,13 @@ const response = await fetch('/registrar-visita/', {
 )
 async def post_registro_visita(payload: RegistroVisitaRequest):
     """
-    Registrar una visita con información de ubicación, descripción, acompañantes y fecha/hora
+    Registrar una visita. Geocodifica la dirección para obtener coordenadas WGS84
+    y determina barrio/vereda y comuna/corregimiento por intersección geográfica.
     """
     import re
 
     try:
-        barrio_vereda = payload.barrio_vereda
-        comuna_corregimiento = payload.comuna_corregimiento
+        direccion_visita = payload.direccion_visita
         descripcion_visita = payload.descripcion_visita
         observaciones_visita = payload.observaciones_visita
         acompanantes = payload.acompanantes
@@ -399,7 +431,7 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
         if not re.match(r'^\d{2}/\d{2}/\d{4}$', fecha_visita):
             raise HTTPException(
                 status_code=400,
-                detail="Formato de fecha_visita inválido. Debe ser dd/mm/aaaa (ejemplo: 13/04/2026)"
+                detail="Formato de fecha_visita inválido. Debe ser dd/mm/aaaa (ejemplo: 18/04/2026)"
             )
         try:
             datetime.strptime(fecha_visita, "%d/%m/%Y")
@@ -422,6 +454,24 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
                 status_code=400,
                 detail=f"Hora inválida: {hora_visita}. Verifique que sea una hora real en formato HH:mm"
             )
+
+        # Geocodificar dirección → coordenadas WGS84
+        geo = await geocodificar_direccion_cali(direccion_visita)
+        coords_dict = None
+        barrio_vereda = None
+        comuna_corregimiento = None
+
+        if geo:
+            lat = geo["lat"]
+            lon = geo["lon"]
+            coords_dict = {"type": "Point", "coordinates": [lon, lat]}
+            # Intersección geográfica con basemaps
+            geo_result = geolocate_point(lon, lat)
+            barrio_vereda = geo_result["barrio_vereda"]
+            comuna_corregimiento = geo_result["comuna_corregimiento"]
+            print(f"📍 Barrio: {barrio_vereda} | Comuna: {comuna_corregimiento}")
+        else:
+            print(f"⚠️ No se pudo geocodificar '{direccion_visita}', se registra sin coordenadas")
 
         # Generar VID con consecutivo incremental
         try:
@@ -447,6 +497,8 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
         visita_data = {
             "vid": vid,
             "vid_number": new_vid_number,
+            "direccion_visita": direccion_visita,
+            "coords": coords_dict,
             "barrio_vereda": barrio_vereda,
             "comuna_corregimiento": comuna_corregimiento,
             "descripcion_visita": descripcion_visita,
@@ -473,6 +525,8 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             success=True,
             vid=vid,
             message="Visita registrada exitosamente",
+            direccion_visita=direccion_visita,
+            coords=coords_dict,
             barrio_vereda=barrio_vereda,
             comuna_corregimiento=comuna_corregimiento,
             descripcion_visita=descripcion_visita,

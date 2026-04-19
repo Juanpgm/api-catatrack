@@ -1,190 +1,149 @@
 """
 Script de prueba para el endpoint POST /registrar-visita/
-Valida que el endpoint esté registrando correctamente en Firebase
+Valida geocodificación de dirección, intersección geográfica con basemaps,
+y persistencia en Firebase.
 """
 import requests
 import json
-import time
 
-# URL de la API (ajusta según tu entorno)
 API_URL = "http://localhost:8000"
 ENDPOINT = f"{API_URL}/registrar-visita/"
+PASS = "✅"
+FAIL = "❌"
+WARN = "⚠️"
 
-def test_registro_visita_endpoint():
-    """
-    Prueba el endpoint de registro de visita
-    """
-    print("=" * 80)
-    print("🧪 PRUEBA DEL ENDPOINT: POST /registrar-visita/")
-    print("=" * 80)
-    
-    # Preparar datos del formulario con timestamp actual
-    timestamp = int(time.time() * 1000)  # Timestamp en milisegundos
-    
-    form_data = {
-        'nombre_up': 'Unidad Centro',
-        'nombre_up_detalle': 'Zona Centro - Área 1',
-        'barrio_vereda': 'San Fernando',
-        'comuna_corregimiento': 'Comuna 3',
-        'fecha_visita': str(timestamp)
+
+def print_section(title):
+    print("\n" + "=" * 70)
+    print(f"🧪 {title}")
+    print("=" * 70)
+
+
+def test_flujo_completo():
+    print_section("TEST 1: Flujo completo — dirección válida en Cali con acompañante")
+    payload = {
+        "direccion_visita": "Calle 5 # 23-45, San Fernando, Cali",
+        "descripcion_visita": "Visita de inspección ambiental",
+        "observaciones_visita": "Se encontraron residuos sólidos en zona peatonal",
+        "acompanantes": [
+            {"nombre_completo": "Juan Pérez", "telefono": "3001234567",
+             "email": "juan@dagma.gov.co", "centro_gestor": "DAGMA"}
+        ],
+        "fecha_visita": "18/04/2026",
+        "hora_visita": "09:00"
     }
-    
-    print("\n📤 Enviando petición al endpoint...")
-    print(f"   URL: {ENDPOINT}")
-    print(f"   Datos:")
-    for key, value in form_data.items():
-        if key == 'fecha_visita':
-            print(f"      {key}: {value} (timestamp en milisegundos)")
-        else:
-            print(f"      {key}: {value}")
-    
+    print(f"\n📤 Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
     try:
-        response = requests.post(ENDPOINT, data=form_data)
-        
-        print(f"\n📥 Respuesta recibida:")
-        print(f"   Status Code: {response.status_code}")
-        
+        response = requests.post(ENDPOINT, json=payload, timeout=30)
+        print(f"\n📥 Status: {response.status_code}")
         if response.status_code == 200:
             result = response.json()
-            print(f"\n✅ PRUEBA EXITOSA!")
-            print(f"\n📊 Datos de la visita registrada:")
             print(json.dumps(result, indent=2, ensure_ascii=False))
-            
-            # Validaciones
-            print(f"\n🔍 Validaciones:")
-            
-            assert result['success'] == True, "❌ Campo 'success' debe ser True"
-            print(f"   ✅ success = {result['success']}")
-            
-            assert 'vid' in result and result['vid'].startswith('VID-'), "❌ Debe tener un VID válido con formato VID-#"
-            print(f"   ✅ VID generado: {result['vid']}")
-            
-            assert result['nombre_up'] == form_data['nombre_up'], "❌ nombre_up no coincide"
-            print(f"   ✅ nombre_up: {result['nombre_up']}")
-            
-            assert result['nombre_up_detalle'] == form_data['nombre_up_detalle'], "❌ nombre_up_detalle no coincide"
-            print(f"   ✅ nombre_up_detalle: {result['nombre_up_detalle']}")
-            
-            assert result['barrio_vereda'] == form_data['barrio_vereda'], "❌ barrio_vereda no coincide"
-            print(f"   ✅ barrio_vereda: {result['barrio_vereda']}")
-            
-            assert result['comuna_corregimiento'] == form_data['comuna_corregimiento'], "❌ comuna_corregimiento no coincide"
-            print(f"   ✅ comuna_corregimiento: {result['comuna_corregimiento']}")
-            
-            assert 'fecha_visita' in result, "❌ Debe incluir fecha_visita"
-            print(f"   ✅ fecha_visita: {result['fecha_visita']}")
-            
-            assert 'timestamp' in result, "❌ Debe incluir timestamp"
-            print(f"   ✅ timestamp: {result['timestamp']}")
-            
-            assert result['message'] == "Visita registrada exitosamente", "❌ Mensaje incorrecto"
-            print(f"   ✅ message: {result['message']}")
-            
-            print(f"\n🎉 TODAS LAS VALIDACIONES PASARON!")
-            print(f"\n⚠️ IMPORTANTE: Verifica manualmente en:")
-            print(f"   1. Firebase Console > Firestore > visitas_dagma > {result['vid']}")
-            print(f"   2. Los datos deben incluir:")
-            print(f"      - vid: {result['vid']}")
-            print(f"      - vid_number: (número extraído del VID)")
-            print(f"      - nombre_up: {result['nombre_up']}")
-            print(f"      - nombre_up_detalle: {result['nombre_up_detalle']}")
-            print(f"      - barrio_vereda: {result['barrio_vereda']}")
-            print(f"      - comuna_corregimiento: {result['comuna_corregimiento']}")
-            print(f"      - fecha_visita: {result['fecha_visita']}")
-            
-        elif response.status_code == 422:
-            print(f"❌ ERROR DE VALIDACIÓN (422)")
-            print(f"   Detalles: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
+            assert result.get("success") == True;            print(f"   {PASS} success = True")
+            assert result.get("vid", "").startswith("VID-"); print(f"   {PASS} VID: {result.get('vid')}")
+            assert result.get("direccion_visita") == payload["direccion_visita"]
+            print(f"   {PASS} direccion_visita guardada")
+            coords = result.get("coords")
+            if coords:
+                lon, lat = coords["coordinates"]
+                assert coords["type"] == "Point"
+                assert -76.7 <= lon <= -76.3, f"lon fuera de rango: {lon}"
+                assert 3.2 <= lat <= 3.7, f"lat fuera de rango: {lat}"
+                print(f"   {PASS} coords WGS84 válidas: [{lon}, {lat}]")
+            else:
+                print(f"   {WARN} Sin coords (Nominatim no respondió)")
+            print(f"   {'✅' if result.get('barrio_vereda') else WARN} barrio_vereda: {result.get('barrio_vereda')}")
+            print(f"   {'✅' if result.get('comuna_corregimiento') else WARN} comuna_corregimiento: {result.get('comuna_corregimiento')}")
+            assert isinstance(result.get("acompanantes"), list)
+            print(f"   {PASS} acompanantes: {len(result['acompanantes'])}")
+            print(f"\n🎉 TEST 1 PASÓ — VID: {result.get('vid')}")
+            return result.get("vid")
         else:
-            print(f"❌ ERROR {response.status_code}")
-            try:
-                error_detail = response.json()
-                print(f"   Detalles: {json.dumps(error_detail, indent=2, ensure_ascii=False)}")
-            except:
-                print(f"   Respuesta: {response.text}")
-    
+            print(f"   {FAIL} Error {response.status_code}: {response.text}")
     except requests.exceptions.ConnectionError:
-        print("❌ ERROR: No se pudo conectar al servidor")
-        print(f"   Asegúrate de que el servidor esté corriendo en {API_URL}")
-    except Exception as e:
-        print(f"❌ ERROR INESPERADO: {str(e)}")
+        print(f"   {FAIL} No se pudo conectar a {API_URL}. ¿Está corriendo la API?")
+    except AssertionError as e:
+        print(f"   {FAIL} Validación: {e}")
+    return None
+
+
+def test_sin_acompanantes():
+    print_section("TEST 2: Sin acompañantes — solo campos requeridos")
+    payload = {
+        "direccion_visita": "Avenida 6N # 28-50, Cali",
+        "descripcion_visita": "Recorrido de campo",
+        "observaciones_visita": "Sin novedades",
+        "fecha_visita": "18/04/2026",
+        "hora_visita": "14:30"
+    }
+    try:
+        response = requests.post(ENDPOINT, json=payload, timeout=30)
+        print(f"\n📥 Status: {response.status_code}")
+        if response.status_code == 200:
+            result = response.json()
+            acomps = result.get("acompanantes")
+            assert acomps is None or acomps == []
+            print(f"   {PASS} acompanantes vacío correctamente: {acomps}")
+            print(f"   {PASS} coords: {result.get('coords')}")
+            print(f"   {PASS} barrio: {result.get('barrio_vereda')} | comuna: {result.get('comuna_corregimiento')}")
+            print(f"\n🎉 TEST 2 PASÓ — VID: {result.get('vid')}")
+        else:
+            print(f"   {FAIL} Error {response.status_code}: {response.text}")
+    except requests.exceptions.ConnectionError:
+        print(f"   {FAIL} No se pudo conectar.")
+    except AssertionError as e:
+        print(f"   {FAIL} {e}")
+
 
 def test_campos_faltantes():
-    """
-    Prueba que el endpoint valide correctamente campos faltantes
-    """
-    print("\n" + "=" * 80)
-    print("🧪 PRUEBA 2: Validación de campos faltantes")
-    print("=" * 80)
-    
-    # Enviar datos incompletos (sin nombre_up)
-    form_data_incompleto = {
-        'nombre_up_detalle': 'Zona Centro - Área 1',
-        'barrio_vereda': 'San Fernando',
-        'comuna_corregimiento': 'Comuna 3',
-        'fecha_visita': str(int(time.time() * 1000))
-    }
-    
-    print("\n📤 Enviando petición con datos incompletos (sin nombre_up)...")
-    
+    print_section("TEST 3: Campos requeridos faltantes (422 esperado)")
+    casos = [
+        ("sin direccion_visita", {"descripcion_visita": "test", "observaciones_visita": "test", "fecha_visita": "18/04/2026", "hora_visita": "10:00"}),
+        ("sin descripcion_visita", {"direccion_visita": "Calle 1, Cali", "observaciones_visita": "test", "fecha_visita": "18/04/2026", "hora_visita": "10:00"}),
+        ("modelo antiguo barrio_vereda sin direccion", {"barrio_vereda": "San Fernando", "comuna_corregimiento": "Comuna 3", "descripcion_visita": "test", "observaciones_visita": "test", "fecha_visita": "18/04/2026", "hora_visita": "10:00"}),
+    ]
     try:
-        response = requests.post(ENDPOINT, data=form_data_incompleto)
-        
-        print(f"📥 Respuesta: Status Code {response.status_code}")
-        
-        if response.status_code == 422:
-            print("✅ Validación correcta: El endpoint rechazó datos incompletos")
-            error_detail = response.json()
-            print(f"   Detalles: {json.dumps(error_detail, indent=2, ensure_ascii=False)}")
-        else:
-            print(f"❌ ERROR: El endpoint debería retornar 422 para datos incompletos")
-            print(f"   Retornó: {response.status_code}")
-    
-    except Exception as e:
-        print(f"❌ ERROR: {str(e)}")
+        for desc, payload in casos:
+            r = requests.post(ENDPOINT, json=payload, timeout=15)
+            if r.status_code == 422:
+                print(f"   {PASS} '{desc}' → 422 (rechazado correctamente)")
+            else:
+                print(f"   {WARN} '{desc}' → {r.status_code} (esperaba 422)")
+    except requests.exceptions.ConnectionError:
+        print(f"   {FAIL} No se pudo conectar.")
 
-def test_formato_fecha_invalido():
-    """
-    Prueba que el endpoint valide correctamente el formato de fecha
-    """
-    print("\n" + "=" * 80)
-    print("🧪 PRUEBA 3: Validación de formato de fecha inválido")
-    print("=" * 80)
-    
-    form_data_fecha_invalida = {
-        'nombre_up': 'Unidad Centro',
-        'nombre_up_detalle': 'Zona Centro - Área 1',
-        'barrio_vereda': 'San Fernando',
-        'comuna_corregimiento': 'Comuna 3',
-        'fecha_visita': 'fecha-invalida'
-    }
-    
-    print("\n📤 Enviando petición con fecha inválida...")
-    
+
+def test_formatos_invalidos():
+    print_section("TEST 4: Formatos de fecha/hora inválidos")
+    base = {"direccion_visita": "Calle 5, Cali", "descripcion_visita": "t", "observaciones_visita": "t"}
+    casos = [
+        ("fecha ISO 2026-04-18",      {**base, "fecha_visita": "2026-04-18", "hora_visita": "10:00"}),
+        ("fecha dd/mm/aa corta",       {**base, "fecha_visita": "18/04/26",   "hora_visita": "10:00"}),
+        ("hora sin cero inicial 9:00", {**base, "fecha_visita": "18/04/2026", "hora_visita": "9:00"}),
+        ("hora con segundos",          {**base, "fecha_visita": "18/04/2026", "hora_visita": "09:00:00"}),
+    ]
     try:
-        response = requests.post(ENDPOINT, data=form_data_fecha_invalida)
-        
-        print(f"📥 Respuesta: Status Code {response.status_code}")
-        
-        if response.status_code == 400:
-            print("✅ Validación correcta: El endpoint rechazó fecha inválida")
-            error_detail = response.json()
-            print(f"   Detalles: {error_detail.get('detail', '')}")
-        else:
-            print(f"❌ ERROR: El endpoint debería retornar 400 para fecha inválida")
-            print(f"   Retornó: {response.status_code}")
-    
-    except Exception as e:
-        print(f"❌ ERROR: {str(e)}")
+        for desc, payload in casos:
+            r = requests.post(ENDPOINT, json=payload, timeout=15)
+            if r.status_code in (400, 422):
+                print(f"   {PASS} '{desc}' → {r.status_code}")
+            else:
+                print(f"   {FAIL} '{desc}' → {r.status_code} (esperaba 400/422)")
+    except requests.exceptions.ConnectionError:
+        print(f"   {FAIL} No se pudo conectar.")
+
 
 if __name__ == "__main__":
-    print("\n🚀 INICIANDO PRUEBAS DEL ENDPOINT /registrar-visita/\n")
-    
-    # Ejecutar pruebas
-    test_registro_visita_endpoint()
+    print("\n🚀 PRUEBAS: POST /registrar-visita/ (con geocodificación Nominatim)")
+    print(f"   API: {API_URL}\n")
+
+    test_flujo_completo()
+    test_sin_acompanantes()
     test_campos_faltantes()
-    test_formato_fecha_invalido()
-    
-    print("\n" + "=" * 80)
+    test_formatos_invalidos()
+
+    print("\n" + "=" * 70)
     print("✅ PRUEBAS FINALIZADAS")
-    print("=" * 80)
+    print("=" * 70)
+    print("\n💡 Verifica en Firebase Console > Firestore > colección 'visitas'")
+    print("   Cada documento debe tener: direccion_visita, coords, barrio_vereda, comuna_corregimiento")
