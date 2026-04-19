@@ -1572,10 +1572,14 @@ async def post_registrar_requerimiento(
         nota_voz_url = None
         if nota_voz and nota_voz.filename:
             try:
-                allowed_audio_types = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/webm", "audio/m4a", "audio/x-m4a"]
+                allowed_audio_types = [
+                    "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg",
+                    "audio/webm", "audio/m4a", "audio/x-m4a", "audio/mp4",
+                    "video/mp4",  # iOS Safari graba nota de voz como video/mp4
+                ]
                 if nota_voz.content_type not in allowed_audio_types:
                     raise ValueError(f"Tipo de archivo no permitido: {nota_voz.content_type}. Permitidos: {', '.join(allowed_audio_types)}")
-                
+
                 audio_content = await nota_voz.read()
                 audio_extension = os.path.splitext(nota_voz.filename)[1] or '.mp3'
                 audio_filename = f"requerimientos/{vid}/{rid}/nota_voz_{uuid.uuid4().hex}{audio_extension}.gz"
