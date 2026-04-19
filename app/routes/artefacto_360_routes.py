@@ -6,6 +6,7 @@ from typing import List, Optional
 from datetime import datetime
 import json
 import re
+import unicodedata
 import uuid
 import math
 import os
@@ -20,6 +21,7 @@ from shapely.ops import nearest_points
 from app.firebase_config import db
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config as BotoConfig
 
 router = APIRouter(tags=["Artefacto de Captura"])
 
@@ -101,9 +103,12 @@ def get_s3_client():
     """
     Crear cliente de S3 con las credenciales del entorno
     """
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+
     aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
     aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-    aws_region = os.getenv('AWS_REGION', 'us-east-1')
+    aws_region = os.getenv('AWS_REGION', 'us-east-2')
     
     if not aws_access_key or not aws_secret_key:
         raise ValueError("Credenciales de AWS no configuradas. Verifica AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY")
@@ -112,11 +117,79 @@ def get_s3_client():
         's3',
         aws_access_key_id=aws_access_key,
         aws_secret_access_key=aws_secret_key,
-        region_name=aws_region
+        region_name=aws_region,
+        config=BotoConfig(signature_version='s3v4')
     )
 
 
-# ==================== GEOLOCALIZACIÓN ====================#
+def _listar_documentos_s3(vid: str, rid: str, s3_client=None, expiration: int = 3600) -> list:
+    """
+    Lista todos los objetos en S3 bajo requerimientos/{vid}/{rid}/ y genera
+    URLs presignadas (descarga y visualización) para cada uno.
+    """
+    bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
+    prefix = f"requerimientos/{vid}/{rid}/"
+
+    if s3_client is None:
+        try:
+            s3_client = get_s3_client()
+        except Exception:
+            return []
+
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    except Exception:
+        return []
+
+    documentos = []
+    for obj in response.get('Contents', []):
+        key = obj['Key']
+        filename = key.rsplit('/', 1)[-1] if '/' in key else key
+        ext = os.path.splitext(filename)[1].lower()
+        ct_map = {
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+            '.webp': 'image/webp', '.heic': 'image/heic',
+            '.pdf': 'application/pdf', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+            '.ogg': 'audio/ogg', '.webm': 'audio/webm', '.m4a': 'audio/mp4',
+            '.gz': 'application/gzip',
+        }
+        content_type = ct_map.get(ext, 'application/octet-stream')
+        s3_url = f"https://{bucket_name}.s3.amazonaws.com/{key}"
+
+        try:
+            url_descarga = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket_name, 'Key': key,
+                        'ResponseContentDisposition': f'attachment; filename="{filename}"'},
+                ExpiresIn=expiration)
+        except Exception:
+            url_descarga = s3_url
+
+        try:
+            url_visualizar = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket_name, 'Key': key,
+                        'ResponseContentDisposition': 'inline'},
+                ExpiresIn=expiration)
+        except Exception:
+            url_visualizar = s3_url
+
+        documentos.append({
+            "filename": filename,
+            "s3_key": key,
+            "s3_url": s3_url,
+            "content_type": content_type,
+            "size": obj.get('Size', 0),
+            "upload_date": obj['LastModified'].isoformat() if obj.get('LastModified') else None,
+            "url_descarga": url_descarga,
+            "url_visualizar": url_visualizar,
+            "url_presigned": url_visualizar,
+            "url_expiration_seconds": expiration,
+        })
+    return documentos
+
+
+# ==================== GEOLOCALIZACIÓN ====================
 # Cargar basemaps en memoria al iniciar el módulo
 def _load_basemap(filepath: str, property_name: str) -> list:
     """Carga un GeoJSON y retorna lista de tuplas (polygon_shape, property_value)"""
@@ -143,6 +216,7 @@ _COMUNAS_POLYGONS = _load_basemap('basemaps/comunas_corregimientos.geojson', 'co
 
 # Índice nombre (mayúsculas) → (polígono, nombre_canónico) para búsqueda rápida
 _BARRIOS_INDEX: dict = {}
+_COMUNAS_INDEX: dict = {}
 
 
 def geolocate_point(lon: float, lat: float) -> dict:
@@ -182,15 +256,54 @@ def _dentro_de_cali(lon: float, lat: float) -> bool:
     return b["lon_min"] <= lon <= b["lon_max"] and b["lat_min"] <= lat <= b["lat_max"]
 
 
+def _strip_acentos(s: str) -> str:
+    """Elimina diacríticos para comparación insensible a tildes/acentos (Siloé ↔ SILOE)."""
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', s)
+        if unicodedata.category(c) != 'Mn'
+    ).upper()
+
+
+def _limpiar_complementos(texto: str) -> str:
+    """
+    Elimina de una dirección los complementos que confunden a los geocodificadores:
+    - Indicaciones relativas: 'junto a', 'frente a', 'contiguo a', 'cerca de', etc.
+    - Datos de unidad: apto, piso, torre, casa, local, oficina, int.
+    - Descriptores vacíos: 'conjunto', 'urb.', 'manzana X'.
+    Conserva el nombre del barrio/sector para que Nominatim lo use como contexto.
+    """
+    # Indicaciones de referencia (hasta la siguiente coma o fin de texto)
+    texto = re.sub(
+        r'\b(junto\s+a|frente\s+al?|contiguo\s+a|al\s+lado\s+de'
+        r'|cerca\s+de|detr[aá]s\s+de|al\s+frente\s+de|esquina\s+con)[^,;]*',
+        '', texto, flags=re.IGNORECASE
+    )
+    # Datos de unidad: eliminar token + valor
+    texto = re.sub(
+        r'\b(apto\.?|apartamento|piso|torre|casa|local|of\.?|oficina|int\.?)\s*[\w\-]+',
+        '', texto, flags=re.IGNORECASE
+    )
+    # Normalizar comas y espacios residuales
+    texto = re.sub(r',\s*,+', ',', texto)
+    texto = re.sub(r'\s{2,}', ' ', texto).strip(' ,')
+    return texto
+
+
 def _normalizar_direccion_colombiana(direccion: str) -> list:
     """
     Genera variantes normalizadas de una dirección colombiana para maximizar
     las posibilidades de geocodificación exitosa.
-    Maneja abreviaciones (Cl, Cra, Av, Dg, Tv), notación # vs No.,
-    y cuadrantes (6N → 6 Norte, 15S → 15 Sur).
+
+    Mejoras respecto a la versión anterior:
+    - Elimina complementos ruidosos (apto, junto a, frente a) antes de geocodificar.
+    - Maneja abreviaciones (Cl, Cra, Av, Dg, Tv), notación # vs No. y cuadrantes.
+    - Genera variante para intersecciones "con" → "&" (mejor soporte OSM/Nominatim).
+    - Genera variante con solo la vía principal como fallback genérico.
     """
-    clean = direccion.strip()
     sufijo = ", Cali, Valle del Cauca, Colombia"
+    clean_orig = direccion.strip()
+    # Versión limpia: sin complementos ruidosos (prioridad para Nominatim)
+    clean = _limpiar_complementos(clean_orig)
 
     abreviaciones = [
         (r'\bCl\.?\b', 'Calle'), (r'\bCll\.?\b', 'Calle'),
@@ -205,28 +318,50 @@ def _normalizar_direccion_colombiana(direccion: str) -> list:
         'NE': 'Noreste', 'NO': 'Noroeste', 'SE': 'Sureste', 'SO': 'Suroeste',
     }
 
-    expanded = clean
-    for pattern, repl in abreviaciones:
-        expanded = re.sub(pattern, repl, expanded, flags=re.IGNORECASE)
-    expanded = re.sub(
-        r'(\d)([NnSsEeOo]{1,2})\b',
-        lambda m: m.group(1) + ' ' + cuadrantes.get(m.group(2).upper(), m.group(2)),
-        expanded
-    )
+    def _expandir(texto: str) -> str:
+        for pattern, repl in abreviaciones:
+            texto = re.sub(pattern, repl, texto, flags=re.IGNORECASE)
+        texto = re.sub(
+            r'(\d)([NnSsEeOo]{1,2})\b',
+            lambda m: m.group(1) + ' ' + cuadrantes.get(m.group(2).upper(), m.group(2)),
+            texto
+        )
+        return texto
+
+    expanded = _expandir(clean)
+    expanded_orig = _expandir(clean_orig)
 
     variantes = []
+
+    # v1: versión limpia con abreviaciones expandidas (óptima para Nominatim)
     variantes.append(f"{expanded}{sufijo}")
+
+    # v2: # → No. en versión limpia
     no_fmt = re.sub(r'\s*#\s*', ' No. ', expanded)
     if no_fmt != expanded:
         variantes.append(f"{no_fmt}{sufijo}")
-    if expanded.lower() != clean.lower():
-        variantes.append(f"{clean}{sufijo}")
+
+    # v3: intersección "con" → "&" (mejor soporte OSM para cruces de calles)
+    if re.search(r'\bcon\b', expanded, re.IGNORECASE):
+        con_fmt = re.sub(r'\s+con\s+', ' & ', expanded, flags=re.IGNORECASE)
+        variantes.append(f"{con_fmt}{sufijo}")
+
+    # v4: versión original expandida (con complementos; por si el nombre de referencia ayuda)
+    if expanded_orig.lower() != expanded.lower():
+        variantes.append(f"{expanded_orig}{sufijo}")
+
+    # v5: original sin expandir como último recurso
+    if clean_orig.lower() not in {expanded.lower(), expanded_orig.lower()}:
+        variantes.append(f"{clean_orig}{sufijo}")
+
+    # v6: solo la vía principal antes del # o primera coma (fallback muy genérico)
     main = re.split(r'\s*[#,]\s*', expanded)[0].strip()
     if len(main) > 5 and main.lower() != expanded.lower():
         variantes.append(f"{main}{sufijo}")
 
     seen, unique = set(), []
     for v in variantes:
+        v = v.strip()
         if v not in seen:
             seen.add(v)
             unique.append(v)
@@ -235,27 +370,171 @@ def _normalizar_direccion_colombiana(direccion: str) -> list:
 
 def _extraer_barrios_mencionados(direccion: str) -> list:
     """
-    Detecta si la dirección menciona explícitamente un barrio/vereda que existe
-    en los basemaps. Retorna lista de (nombre_canónico, polígono), ordenada por
-    longitud descendente para preferir coincidencias más específicas.
-    Solo considera nombres de 5+ caracteres para evitar falsos positivos.
+    Detecta barrios/veredas mencionados en la dirección usando cuatro estrategias:
+
+    1. Coincidencia directa insensible a acentos: 'Centenario', 'La Flora'.
+    2. Prefijo de 2 palabras del basemap: 'San Fernando' → 'San Fernando Viejo'.
+    3. Extracción por palabra clave ('barrio X', 'sector X', 'vereda X'):
+       el texto extraído se empareja exactamente, por prefijo y por palabras clave.
+    4. Palabras significativas (≥5 chars, no artículos): 'El Obrero' → 'Barrio Obrero'.
+
+    Retorna lista de (nombre_canónico, polígono) ordenada por longitud descendente.
     """
     global _BARRIOS_INDEX
     if not _BARRIOS_INDEX:
-        _BARRIOS_INDEX = {
-            name.upper(): (poly, name)
-            for poly, name in _BARRIOS_POLYGONS
-            if name and len(name) >= 5
+        # Números escritos como palabra → dígito, para que "7 de Agosto" encuentre "Siete de Agosto"
+        _NUM_TO_DIGIT = {
+            'PRIMERO': '1', 'UNO': '1', 'DOS': '2', 'TRES': '3', 'CUATRO': '4',
+            'CINCO': '5', 'SEIS': '6', 'SIETE': '7', 'OCHO': '8', 'NUEVE': '9',
+            'DIEZ': '10', 'ONCE': '11', 'DOCE': '12', 'VEINTE': '20',
+        }
+        for poly, name in _BARRIOS_POLYGONS:
+            if not name or len(name) < 5:
+                continue
+            key = _strip_acentos(name)
+            _BARRIOS_INDEX[key] = (poly, name)
+            # Variante dígito para nombres que comienzan con número escrito
+            # ("SIETE DE AGOSTO" → "7 DE AGOSTO")
+            first = key.split()[0]
+            if first in _NUM_TO_DIGIT:
+                alt = _NUM_TO_DIGIT[first] + key[len(first):]
+                _BARRIOS_INDEX.setdefault(alt, (poly, name))
+
+    texto_norm = _strip_acentos(direccion)
+    encontrados: dict = {}  # canonical_name → polygon (deduplicado)
+
+    # ── Estrategia 1: coincidencia directa insensible a acentos ──
+    for nombre_norm, (polygon, nombre_canonical) in _BARRIOS_INDEX.items():
+        if nombre_norm in texto_norm:
+            encontrados[nombre_canonical] = polygon
+
+    # ── Estrategia 1b: prefijo de 2 palabras del nombre del basemap ──
+    # Captura "San Fernando" → "San Fernando Viejo" / "San Fernando Nuevo"
+    for nombre_norm, (polygon, nombre_canonical) in _BARRIOS_INDEX.items():
+        if nombre_canonical in encontrados:
+            continue
+        palabras = nombre_norm.split()
+        if len(palabras) >= 2:
+            prefijo = ' '.join(palabras[:2])
+            if len(prefijo) >= 10 and prefijo in texto_norm:
+                encontrados[nombre_canonical] = polygon
+
+    # ── Estrategia 2: extracción por palabra clave "barrio X", "sector X", "urb X", etc. ──
+    _STOP_WORDS_GEO = {
+        'EL', 'LA', 'LOS', 'LAS', 'SAN', 'SANTA', 'DE', 'DEL', 'UN', 'UNA',
+        'BARRIO', 'SECTOR', 'VEREDA', 'CON', 'CALLE', 'CARRERA', 'AVENIDA',
+        'CIUDAD', 'PARQUE', 'VILLA', 'NUEVO', 'NUEVA', 'VIEJO', 'VIEJA',
+        'URBANIZACION', 'CIUDADELA', 'CONJUNTO', 'RESIDENCIAL', 'UNIDAD',
+    }
+    kw_pattern = re.compile(
+        r'\b(?:barrio|bario|sector|vereda|b[oOº°]'
+        r'|urb\.?|urbanizaci[oó]n|ciudadela'
+        r'|conj\.?|cjto\.?|conjunto|res\.?|residencial)\s+'
+        r'([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f0-9\s]{2,30}?)'
+        r'(?=\s*[,;#\n]|\s*$)',
+        re.IGNORECASE
+    )
+    for m in kw_pattern.finditer(direccion):
+        candidato_norm = _strip_acentos(m.group(1).strip())
+        if not candidato_norm:
+            continue
+
+        # 2a. Exacto
+        if candidato_norm in _BARRIOS_INDEX:
+            poly, canonical = _BARRIOS_INDEX[candidato_norm]
+            encontrados[canonical] = poly
+            continue
+
+        # 2b. Prefijo: basemap_key comienza con el candidato o viceversa
+        matched = False
+        for idx_key, (poly, canonical) in _BARRIOS_INDEX.items():
+            if (idx_key.startswith(candidato_norm) or candidato_norm.startswith(idx_key)) \
+                    and len(idx_key) >= 5:
+                encontrados[canonical] = poly
+                matched = True
+                break
+
+        # 2c. Palabras significativas en común (fallback para "El Obrero" → "Barrio Obrero")
+        if not matched:
+            palabras_cand = {
+                w for w in candidato_norm.split()
+                if len(w) >= 6 and w not in _STOP_WORDS_GEO
+            }
+            if palabras_cand:
+                for idx_key, (poly, canonical) in _BARRIOS_INDEX.items():
+                    palabras_idx = {
+                        w for w in idx_key.split()
+                        if len(w) >= 6 and w not in _STOP_WORDS_GEO
+                    }
+                    if palabras_cand & palabras_idx:
+                        encontrados[canonical] = poly
+                        break
+
+    result = [(name, poly) for name, poly in encontrados.items()]
+    result.sort(key=lambda x: len(x[0]), reverse=True)
+    return result
+
+
+def _extraer_comunas_mencionadas(direccion: str) -> list:
+    """
+    Detecta comunas o corregimientos mencionados en la dirección usando tres estrategias:
+
+    A. Número de comuna: 'comuna 10', 'c. 10', 'com 10', 'c.10', 'COMUNA 01'…
+    B. Nombre de corregimiento directo insensible a acentos: 'Pance', 'Felidia', 'La Buitrera'.
+    C. Keyword 'corregimiento X' / 'cgto X' con búsqueda exacta y por prefijo.
+
+    Retorna lista de (nombre_canónico, polígono).
+    """
+    global _COMUNAS_INDEX
+    if not _COMUNAS_INDEX:
+        _COMUNAS_INDEX = {
+            _strip_acentos(name): (poly, name)
+            for poly, name in _COMUNAS_POLYGONS
+            if name
         }
 
-    texto = direccion.upper()
-    encontrados = []
-    for nombre_upper, (polygon, nombre_canonical) in _BARRIOS_INDEX.items():
-        if nombre_upper in texto:
-            encontrados.append((nombre_canonical, polygon))
-    # Preferir nombres más largos (más específicos)
-    encontrados.sort(key=lambda x: len(x[0]), reverse=True)
-    return encontrados
+    texto_norm = _strip_acentos(direccion)
+    encontrados: dict = {}
+
+    # A: número de comuna — soporta "comuna 10", "c.10", "com 10", "c. 10"
+    num_pattern = re.compile(
+        r'\b(?:comunas?|com\.?|c\.)\s*0?(\d{1,2})\b',
+        re.IGNORECASE
+    )
+    for m in num_pattern.finditer(direccion):
+        num = int(m.group(1))
+        clave = f'COMUNA {num:02d}'
+        if clave in _COMUNAS_INDEX:
+            poly, canonical = _COMUNAS_INDEX[clave]
+            encontrados[canonical] = poly
+
+    # B: nombre de corregimiento directo (solo entradas nombradas, no "COMUNA NN")
+    for nombre_norm, (polygon, nombre_canonical) in _COMUNAS_INDEX.items():
+        if not nombre_norm.startswith('COMUNA') and len(nombre_norm) >= 5:
+            if nombre_norm in texto_norm:
+                encontrados[nombre_canonical] = polygon
+
+    # C: keyword "corregimiento X" / "cgto X" / "correg X"
+    kw_corr = re.compile(
+        r'\b(?:corregimiento|correg\.?|cgto\.?)\s+'
+        r'([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f0-9\s]{2,25}?)'
+        r'(?=\s*[,;#\n]|\s*$)',
+        re.IGNORECASE
+    )
+    for m in kw_corr.finditer(direccion):
+        candidato_norm = _strip_acentos(m.group(1).strip())
+        if candidato_norm in _COMUNAS_INDEX:
+            poly, canonical = _COMUNAS_INDEX[candidato_norm]
+            encontrados[canonical] = poly
+        else:
+            for idx_key, (poly, canonical) in _COMUNAS_INDEX.items():
+                if not idx_key.startswith('COMUNA') and (
+                    idx_key.startswith(candidato_norm) or candidato_norm.startswith(idx_key)
+                ) and len(idx_key) >= 5:
+                    encontrados[canonical] = poly
+                    break
+
+    return [(name, poly) for name, poly in encontrados.items()]
 
 
 def _snap_al_interior(lon: float, lat: float, polygon) -> tuple:
@@ -389,19 +668,20 @@ async def _geocode_arcgis(query: str, client: httpx.AsyncClient) -> Optional[dic
 
 async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
     """
-    Geocodifica una dirección en Cali con cadena de proveedores, barrio-hint y fallback.
+    Geocodifica una dirección en Cali con cadena de proveedores, barrio/comuna-hint y fallback.
 
     Estrategia:
       1. Caché en memoria: evita llamadas redundantes.
-      2. Extrae barrios/veredas mencionados explícitamente en la dirección.
-      3. Nominatim multi-candidato (limit=5, acotado al bbox de Cali):
-         - Elige el candidato que cae dentro del polígono del barrio mencionado.
-         - Si ninguno cae dentro, proyecta geométricamente el más cercano al
-           interior del polígono (snap) usando shapely.ops.nearest_points.
-      4. Si no hay barrio mencionado o el paso anterior falló: Nominatim simple.
-      5. Fallback a Photon (Komoot).
-      6. Fallback a ArcGIS.
-      7. Fallback final al centroide del barrio mencionado (proveedor='barrio_centroide').
+      2a. Extrae barrios/veredas mencionados (insensible a acentos, 4 estrategias).
+      2b. Extrae comunas/corregimientos mencionados (número o nombre).
+      3. Nominatim multi-candidato acotado al bbox de Cali:
+         - Si hay barrio_hint → elige/proyecta el candidato dentro del polígono del barrio.
+         - Si solo hay comuna_hint → elige/proyecta dentro del polígono de la comuna.
+      4. Nominatim simple (sin hint o sin resultados con hint).
+      5. Photon (Komoot) como fallback OSM alternativo.
+      6. ArcGIS World Geocoding.
+      7. Fallback al centroide del barrio mencionado.
+      8. Fallback al centroide de la comuna mencionada.
 
     Retorna dict con 'lat', 'lon', 'proveedor' y opcionalmente 'barrio_snap' (bool),
     'barrio_snap_desde' (str). Retorna None si todos los pasos fallan.
@@ -414,23 +694,29 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
 
     variantes = _normalizar_direccion_colombiana(direccion)
     barrios_hint = _extraer_barrios_mencionados(direccion)
-    hint_nombre = barrios_hint[0][0] if barrios_hint else "N/A"
-    print(f"🔍 Geocodificando '{direccion}' | variantes={len(variantes)} | barrio_hint='{hint_nombre}'")
+    comunas_hint = _extraer_comunas_mencionadas(direccion)
+
+    hint_b = barrios_hint[0][0] if barrios_hint else "—"
+    hint_c = comunas_hint[0][0] if comunas_hint else "—"
+    print(
+        f"🔍 Geocodificando '{direccion}' | variantes={len(variantes)}"
+        f" | barrio='{hint_b}' | comuna='{hint_c}'"
+    )
 
     async with httpx.AsyncClient(timeout=12.0) as client:
 
-        # ── Paso 1: Nominatim multi-candidato con restricción de barrio ──
+        # ── Paso 1: Nominatim multi-candidato restringido al polígono del barrio ──
         if barrios_hint:
             barrio_name_hint, barrio_polygon_hint = barrios_hint[0]
-            for query in variantes:
+            variantes_hint = variantes + [f"{barrio_name_hint}, Cali, Valle del Cauca, Colombia"]
+            for query in variantes_hint:
                 candidatos = await _geocode_nominatim_multi(query, client, limit=5)
                 if candidatos:
                     mejor = _seleccionar_candidato(candidatos, barrio_polygon_hint, barrio_name_hint)
                     if mejor:
                         snap_msg = (
                             f" (proyectado desde {mejor['barrio_snap_desde']})"
-                            if mejor.get("barrio_snap")
-                            else ""
+                            if mejor.get("barrio_snap") else ""
                         )
                         print(
                             f"✅ [{mejor['proveedor']}+barrio:'{barrio_name_hint}'] →"
@@ -439,7 +725,27 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                         _GEOCODE_CACHE[clave] = mejor
                         return mejor
 
-        # ── Paso 2: Nominatim simple (sin hint o sin resultados con hint) ──
+        # ── Paso 2: Nominatim multi-candidato restringido al polígono de la comuna ──
+        if comunas_hint and not barrios_hint:
+            comuna_name_hint, comuna_polygon_hint = comunas_hint[0]
+            variantes_hint = variantes + [f"{comuna_name_hint}, Cali, Valle del Cauca, Colombia"]
+            for query in variantes_hint:
+                candidatos = await _geocode_nominatim_multi(query, client, limit=5)
+                if candidatos:
+                    mejor = _seleccionar_candidato(candidatos, comuna_polygon_hint, comuna_name_hint)
+                    if mejor:
+                        snap_msg = (
+                            f" (proyectado desde {mejor['barrio_snap_desde']})"
+                            if mejor.get("barrio_snap") else ""
+                        )
+                        print(
+                            f"✅ [{mejor['proveedor']}+comuna:'{comuna_name_hint}'] →"
+                            f" [{mejor['lon']:.6f}, {mejor['lat']:.6f}]{snap_msg}"
+                        )
+                        _GEOCODE_CACHE[clave] = mejor
+                        return mejor
+
+        # ── Paso 3: Nominatim simple (sin hint o sin resultados con hint) ──
         for query in variantes:
             result = await _geocode_nominatim(query, client)
             if result:
@@ -447,7 +753,7 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                 _GEOCODE_CACHE[clave] = result
                 return result
 
-        # ── Paso 3: Photon ──
+        # ── Paso 4: Photon ──
         for query in variantes[:2]:
             result = await _geocode_photon(query, client)
             if result:
@@ -455,7 +761,7 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                 _GEOCODE_CACHE[clave] = result
                 return result
 
-        # ── Paso 4: ArcGIS ──
+        # ── Paso 5: ArcGIS ──
         for query in variantes[:2]:
             result = await _geocode_arcgis(query, client)
             if result:
@@ -463,21 +769,29 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                 _GEOCODE_CACHE[clave] = result
                 return result
 
-        # ── Paso 5: Fallback al centroide del barrio mencionado ──
+        # ── Paso 6: Fallback al centroide del barrio mencionado ──
         if barrios_hint:
             barrio_name_hint, barrio_polygon_hint = barrios_hint[0]
             centroide = barrio_polygon_hint.centroid
             result = {
-                "lat": centroide.y,
-                "lon": centroide.x,
+                "lat": centroide.y, "lon": centroide.x,
                 "proveedor": "barrio_centroide",
-                "barrio_snap": True,
-                "barrio_snap_desde": "centroide_fallback",
+                "barrio_snap": True, "barrio_snap_desde": "centroide_fallback",
             }
-            print(
-                f"📍 Fallback centroide de '{barrio_name_hint}':"
-                f" [{centroide.x:.6f}, {centroide.y:.6f}]"
-            )
+            print(f"📍 Fallback centroide barrio '{barrio_name_hint}': [{centroide.x:.6f}, {centroide.y:.6f}]")
+            _GEOCODE_CACHE[clave] = result
+            return result
+
+        # ── Paso 7: Fallback al centroide de la comuna mencionada ──
+        if comunas_hint:
+            comuna_name_hint, comuna_polygon_hint = comunas_hint[0]
+            centroide = comuna_polygon_hint.centroid
+            result = {
+                "lat": centroide.y, "lon": centroide.x,
+                "proveedor": "comuna_centroide",
+                "barrio_snap": True, "barrio_snap_desde": "centroide_fallback",
+            }
+            print(f"📍 Fallback centroide comuna '{comuna_name_hint}': [{centroide.x:.6f}, {centroide.y:.6f}]")
             _GEOCODE_CACHE[clave] = result
             return result
 
@@ -568,12 +882,13 @@ class RegistroRequerimientoResponse(BaseModel):
     tipo_requerimiento: str
     requerimiento: str
     observaciones: str
-    direccion: Optional[str]
-    barrio_vereda: Optional[str]
-    comuna_corregimiento: Optional[str]
+    direccion: Optional[str] = None
+    barrio_vereda: Optional[str] = None
+    comuna_corregimiento: Optional[str] = None
     coords: dict
     estado: str
-    nota_voz_url: Optional[str]
+    nota_voz_url: Optional[str] = None
+    documentos_urls: Optional[List[dict]] = None
     fecha_registro: str
     organismos_encargados: List[str]
     timestamp: str
@@ -1627,7 +1942,8 @@ async def post_registrar_requerimiento(
     coords: str = Form(..., description='Coordenadas GPS en formato GeoJSON Point: {"type": "Point", "coordinates": [lng, lat]}'),
     organismos_encargados: str = Form(..., description="Lista de nombres de centros gestores en formato JSON array"),
     direccion: Optional[str] = Form(None, description="Dirección del requerimiento (texto)"),
-    nota_voz: Optional[UploadFile] = File(None, description="Archivo de audio opcional")
+    nota_voz: Optional[UploadFile] = File(None, description="Archivo de audio opcional"),
+    fotos: List[UploadFile] = File(default=[], description="Fotos/documentos adjuntos (múltiples archivos)")
 ):
     """
     Registrar un nuevo requerimiento con datos del solicitante y coordenadas GPS.
@@ -1748,7 +2064,41 @@ async def post_registrar_requerimiento(
                 
             except Exception as e:
                 print(f"⚠️ Advertencia: Error subiendo nota de voz: {str(e)}")
-        
+
+        # Procesar fotos/documentos adjuntos
+        documentos_urls = []
+        if fotos:
+            try:
+                s3_client_fotos = get_s3_client()
+                bucket_name_fotos = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
+                allowed_doc_types = [
+                    "image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic",
+                    "application/pdf",
+                ]
+                for foto in fotos:
+                    if not foto or not foto.filename:
+                        continue
+                    if foto.content_type not in allowed_doc_types:
+                        print(f"⚠️ Tipo no permitido, omitido: {foto.filename} ({foto.content_type})")
+                        continue
+                    file_content = await foto.read()
+                    if len(file_content) == 0:
+                        continue
+                    safe_name = re.sub(r'[^\w.\-]', '_', foto.filename)
+                    s3_key = f"requerimientos/{vid}/{rid}/{uuid.uuid4().hex}_{safe_name}"
+                    s3_client_fotos.put_object(
+                        Bucket=bucket_name_fotos, Key=s3_key,
+                        Body=file_content, ContentType=foto.content_type,
+                    )
+                    documentos_urls.append({
+                        "filename": foto.filename, "s3_key": s3_key,
+                        "s3_url": f"https://{bucket_name_fotos}.s3.amazonaws.com/{s3_key}",
+                        "content_type": foto.content_type, "size": len(file_content),
+                    })
+                    print(f"✅ Documento subido a S3: {s3_key} ({len(file_content)} bytes)")
+            except Exception as e:
+                print(f"⚠️ Error subiendo fotos/documentos: {str(e)}")
+
         # Capturar fecha y hora de registro
         fecha_registro = datetime.utcnow()
         
@@ -1770,6 +2120,9 @@ async def post_registrar_requerimiento(
             "coords": coords_dict,
             "estado": "Pendiente",
             "nota_voz_url": nota_voz_url,
+            "documentos_s3": [{"filename": d["filename"], "s3_key": d["s3_key"],
+                               "content_type": d["content_type"], "size": d["size"]}
+                              for d in documentos_urls],
             "fecha_registro": fecha_registro.isoformat(),
             "organismos_encargados": organismos_list,
             "created_at": datetime.utcnow().isoformat(),
@@ -1802,6 +2155,7 @@ async def post_registrar_requerimiento(
             coords=coords_dict,
             estado="Pendiente",
             nota_voz_url=nota_voz_url,
+            documentos_urls=documentos_urls if documentos_urls else None,
             fecha_registro=fecha_registro.isoformat(),
             organismos_encargados=organismos_list,
             timestamp=datetime.utcnow().isoformat()
@@ -1869,7 +2223,7 @@ async def obtener_requerimientos(
 ):
     """
     Obtener todos los requerimientos de la colección 'requerimientos'.
-    Opcionalmente se puede filtrar por VID.
+    Incluye documentos_con_enlaces con URLs presignadas de S3 para cada requerimiento.
     """
     try:
         requerimientos_ref = db.collection('requerimientos')
@@ -1879,10 +2233,29 @@ async def obtener_requerimientos(
         else:
             docs = requerimientos_ref.stream()
 
+        # Crear cliente S3 una sola vez para generar presigned URLs
+        s3_client = None
+        try:
+            s3_client = get_s3_client()
+        except Exception as e:
+            print(f"⚠️ No se pudo crear cliente S3 para URLs presignadas: {e}")
+
         requerimientos = []
         for doc in docs:
             data = doc.to_dict()
             data['id'] = doc.id
+
+            # Listar documentos de S3 con URLs presignadas
+            req_vid = data.get('vid', '')
+            req_rid = data.get('rid', '')
+            if req_vid and req_rid and s3_client:
+                documentos = _listar_documentos_s3(req_vid, req_rid, s3_client=s3_client)
+                data['documentos_con_enlaces'] = documentos
+                data['total_documentos'] = len(documentos)
+            else:
+                data['documentos_con_enlaces'] = []
+                data['total_documentos'] = 0
+
             requerimientos.append(clean_nan_values(data))
 
         return {
