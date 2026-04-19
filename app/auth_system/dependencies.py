@@ -1,4 +1,4 @@
-﻿"""Dependencias de autenticaciÃ³n para FastAPI."""
+﻿"""Dependencias de autenticación para FastAPI."""
 
 from datetime import datetime, timezone, timedelta
 
@@ -54,7 +54,7 @@ async def get_current_user(
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token invÃ¡lido o expirado",
+            detail="Token inválido o expirado",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

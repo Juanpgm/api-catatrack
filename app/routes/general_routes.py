@@ -1,4 +1,4 @@
-﻿"""
+"""
 Rutas generales - Health checks y endpoints de utilidad
 """
 from fastapi import APIRouter
@@ -18,19 +18,19 @@ def now_colombia() -> datetime:
 @router.get("/ping")
 async def ping():
     """
-    ðŸ”µ GET | â¤ï¸ Health Check | Health check super simple para Railway con soporte UTF-8
+    🔵 GET | ❤️ Health Check | Health check super simple para Railway con soporte UTF-8
     """
     return {
         "status": "ok",
-        "message": "Â¡Pong! ðŸ“",
+        "message": "¡Pong! 🏓",
         "timestamp": now_colombia().isoformat(),
-        "utf8_test": "Funciona correctamente con caracteres especiales: Ã¡ Ã© Ã­ Ã³ Ãº Ã±"
+        "utf8_test": "Funciona correctamente con caracteres especiales: á é í ó ú ñ"
     }
 
 @router.get("/cors-test")
 async def cors_test():
     """
-    Endpoint especÃ­fico para probar configuraciÃ³n CORS
+    Endpoint específico para probar configuración CORS
     """
     return {
         "cors": "enabled",
@@ -41,26 +41,26 @@ async def cors_test():
 @router.options("/cors-test")
 async def cors_test_options():
     """
-    OPTIONS handler especÃ­fico para CORS test
+    OPTIONS handler específico para CORS test
     """
     return {"message": "OPTIONS request successful"}
 
 @router.get("/test/utf8")
 async def test_utf8():
     """
-    Endpoint de prueba especÃ­fico para caracteres UTF-8 en espaÃ±ol
+    Endpoint de prueba específico para caracteres UTF-8 en español
     """
     return {
         "test": "UTF-8",
-        "espaÃ±ol": "Caracteres especiales: Ã¡ Ã© Ã­ Ã³ Ãº Ã± Ã‘",
-        "symbols": "Â© Â® â„¢ â‚¬ Â£ Â¥",
-        "message": "Todos los caracteres UTF-8 funcionan correctamente âœ“"
+        "español": "Caracteres especiales: á é í ó ú ñ Ñ",
+        "symbols": "© ® ™ € £ ¥",
+        "message": "Todos los caracteres UTF-8 funcionan correctamente ✓"
     }
 
 @router.get("/debug/railway")
 async def railway_debug():
     """
-    Debug especÃ­fico para Railway - DiagnÃ³stico simplificado
+    Debug específico para Railway - Diagnóstico simplificado
     """
     return {
         "platform": platform.system(),
@@ -72,9 +72,9 @@ async def railway_debug():
 @router.get("/health")
 async def health_check():
     """
-    ðŸ”µ GET | â¤ï¸ Health Check | Verificar estado de salud de la API
+    🔵 GET | ❤️ Health Check | Verificar estado de salud de la API
     
-    Endpoint completo de health check con informaciÃ³n del sistema
+    Endpoint completo de health check con información del sistema
     """
     return {
         "status": "healthy",

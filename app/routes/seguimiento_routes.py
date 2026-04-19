@@ -1,6 +1,6 @@
-﻿"""
-Rutas para el mÃ³dulo de Seguimiento de Requerimientos (Kanban)
-Flujo: Programar Visita â†’ Registrar Requerimientos â†’ GestiÃ³n Kanban
+"""
+Rutas para el módulo de Seguimiento de Requerimientos (Kanban)
+Flujo: Programar Visita → Registrar Requerimientos → Gestión Kanban
 """
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Optional
@@ -169,24 +169,24 @@ class AsignarEnlaceBody(BaseModel):
     enlace_nombre: str
 
 
-# ==================== DATOS INICIALES (CatÃ¡logos) ====================
+# ==================== DATOS INICIALES (Catálogos) ====================
 
-# Centros gestores disponibles (catÃ¡logo base)
+# Centros gestores disponibles (catálogo base)
 _CENTROS_GESTORES_DEFAULT = [
     {"id": "dagma", "nombre": "DAGMA", "sigla": "DAGMA", "color": "#22c55e"},
     {"id": "emcali", "nombre": "EMCALI", "sigla": "EMCALI", "color": "#3b82f6"},
-    {"id": "stt", "nombre": "SecretarÃ­a de TrÃ¡nsito", "sigla": "STT", "color": "#f59e0b"},
-    {"id": "svsp", "nombre": "SecretarÃ­a de Vivienda", "sigla": "SVSP", "color": "#8b5cf6"},
-    {"id": "salud", "nombre": "SecretarÃ­a de Salud", "sigla": "Salud", "color": "#ef4444"},
-    {"id": "educacion", "nombre": "SecretarÃ­a de EducaciÃ³n", "sigla": "Educ.", "color": "#06b6d4"},
-    {"id": "infraestructura", "nombre": "Infraestructura y ValorizaciÃ³n", "sigla": "IyV", "color": "#f97316"},
-    {"id": "cultura", "nombre": "SecretarÃ­a de Cultura", "sigla": "Cultura", "color": "#ec4899"},
+    {"id": "stt", "nombre": "Secretaría de Tránsito", "sigla": "STT", "color": "#f59e0b"},
+    {"id": "svsp", "nombre": "Secretaría de Vivienda", "sigla": "SVSP", "color": "#8b5cf6"},
+    {"id": "salud", "nombre": "Secretaría de Salud", "sigla": "Salud", "color": "#ef4444"},
+    {"id": "educacion", "nombre": "Secretaría de Educación", "sigla": "Educ.", "color": "#06b6d4"},
+    {"id": "infraestructura", "nombre": "Infraestructura y Valorización", "sigla": "IyV", "color": "#f97316"},
+    {"id": "cultura", "nombre": "Secretaría de Cultura", "sigla": "Cultura", "color": "#ec4899"},
     {"id": "recreacion", "nombre": "IMRD", "sigla": "IMRD", "color": "#84cc16"},
-    {"id": "sspd", "nombre": "SecretarÃ­a de Seguridad", "sigla": "SSPD", "color": "#6b7280"},
-    {"id": "dps", "nombre": "SecretarÃ­a de Desarrollo", "sigla": "DPS", "color": "#14b8a6"},
-    {"id": "planeacion", "nombre": "PlaneaciÃ³n Municipal", "sigla": "Planeac.", "color": "#a78bfa"},
+    {"id": "sspd", "nombre": "Secretaría de Seguridad", "sigla": "SSPD", "color": "#6b7280"},
+    {"id": "dps", "nombre": "Secretaría de Desarrollo", "sigla": "DPS", "color": "#14b8a6"},
+    {"id": "planeacion", "nombre": "Planeación Municipal", "sigla": "Planeac.", "color": "#a78bfa"},
     {"id": "bomberos", "nombre": "Cuerpo de Bomberos", "sigla": "Bomberos", "color": "#dc2626"},
-    {"id": "alcaldia", "nombre": "AlcaldÃ­a de Cali", "sigla": "AlcaldÃ­a", "color": "#1e40af"},
+    {"id": "alcaldia", "nombre": "Alcaldía de Cali", "sigla": "Alcaldía", "color": "#1e40af"},
 ]
 
 
@@ -202,14 +202,14 @@ def _doc_to_dict(doc) -> dict:
 
 @router.get(
     "/centros-gestores",
-    summary="ðŸ“‹ GET | CatÃ¡logo de Centros Gestores",
+    summary="📋 GET | Catálogo de Centros Gestores",
     response_model=List[CentroGestorOut],
 )
 async def get_centros_gestores(current_user: dict = Depends(get_current_user)):
     """
-    Retorna el catÃ¡logo de entidades/organismos de la alcaldÃ­a.
-    Primero intenta leer desde la colecciÃ³n 'centros_gestores' en Firestore;
-    si estÃ¡ vacÃ­a, devuelve el catÃ¡logo base incorporado.
+    Retorna el catálogo de entidades/organismos de la alcaldía.
+    Primero intenta leer desde la colección 'centros_gestores' en Firestore;
+    si está vacía, devuelve el catálogo base incorporado.
     """
     try:
         docs = list(db.collection("centros_gestores").stream())
@@ -224,7 +224,7 @@ async def get_centros_gestores(current_user: dict = Depends(get_current_user)):
 
 @router.get(
     "/colaboradores",
-    summary="ðŸ‘¥ GET | Colaboradores del grupo operativo",
+    summary="👥 GET | Colaboradores del grupo operativo",
     response_model=List[ColaboradorOut],
 )
 async def get_colaboradores(current_user: dict = Depends(get_current_user)):
@@ -242,7 +242,7 @@ async def get_colaboradores(current_user: dict = Depends(get_current_user)):
 
 @router.get(
     "/visitas",
-    summary="ðŸ—“ï¸ GET | Listar visitas programadas",
+    summary="🗓️ GET | Listar visitas programadas",
     response_model=List[VisitaProgramadaOut],
 )
 async def get_visitas(
@@ -270,7 +270,7 @@ async def get_visitas(
 
 @router.post(
     "/visitas",
-    summary="ðŸ—“ï¸ POST | Programar nueva visita",
+    summary="🗓️ POST | Programar nueva visita",
     response_model=VisitaProgramadaOut,
     status_code=201,
 )
@@ -284,7 +284,7 @@ async def programar_visita(
     try:
         now = now_colombia().isoformat()
 
-        # Resolver colaboradores si se envÃ­an IDs
+        # Resolver colaboradores si se envían IDs
         colaboradores_data = []
         if body.colaboradores:
             for col_id in body.colaboradores:
@@ -318,7 +318,7 @@ async def programar_visita(
 
 @router.patch(
     "/visitas/{visita_id}/estado",
-    summary="ðŸ—“ï¸ PATCH | Actualizar estado de visita",
+    summary="🗓️ PATCH | Actualizar estado de visita",
     response_model=VisitaProgramadaOut,
 )
 async def actualizar_estado_visita(
@@ -333,7 +333,7 @@ async def actualizar_estado_visita(
     if body.estado not in estados_validos:
         raise HTTPException(
             status_code=400,
-            detail=f"Estado invÃ¡lido. Debe ser uno de: {', '.join(estados_validos)}"
+            detail=f"Estado inválido. Debe ser uno de: {', '.join(estados_validos)}"
         )
 
     try:
@@ -360,7 +360,7 @@ async def actualizar_estado_visita(
 
 @router.get(
     "/requerimientos",
-    summary="ðŸ“‹ GET | Listar requerimientos",
+    summary="📋 GET | Listar requerimientos",
     response_model=List[RequerimientoOut],
 )
 async def get_requerimientos(
@@ -388,7 +388,7 @@ async def get_requerimientos(
 
 @router.post(
     "/requerimientos",
-    summary="ðŸ“‹ POST | Crear requerimiento de seguimiento",
+    summary="📋 POST | Crear requerimiento de seguimiento",
     response_model=RequerimientoOut,
     status_code=201,
 )
@@ -457,7 +457,7 @@ async def crear_requerimiento(
 
 @router.patch(
     "/requerimientos/{req_id}/estado",
-    summary="ðŸ“‹ PATCH | Cambiar estado de requerimiento",
+    summary="📋 PATCH | Cambiar estado de requerimiento",
     response_model=RequerimientoOut,
 )
 async def cambiar_estado_requerimiento(
@@ -472,7 +472,7 @@ async def cambiar_estado_requerimiento(
     if body.estado not in estados_validos:
         raise HTTPException(
             status_code=400,
-            detail=f"Estado invÃ¡lido. Debe ser uno de: {', '.join(estados_validos)}"
+            detail=f"Estado inválido. Debe ser uno de: {', '.join(estados_validos)}"
         )
 
     try:
@@ -517,7 +517,7 @@ async def cambiar_estado_requerimiento(
 
 @router.patch(
     "/requerimientos/{req_id}/encargado",
-    summary="ðŸ“‹ PATCH | Asignar encargado a requerimiento",
+    summary="📋 PATCH | Asignar encargado a requerimiento",
     response_model=RequerimientoOut,
 )
 async def asignar_encargado(
@@ -550,7 +550,7 @@ async def asignar_encargado(
 
 @router.patch(
     "/requerimientos/{req_id}/enlace",
-    summary="ðŸ“‹ PATCH | Asignar enlace a requerimiento",
+    summary="📋 PATCH | Asignar enlace a requerimiento",
     response_model=RequerimientoOut,
 )
 async def asignar_enlace(
@@ -590,7 +590,7 @@ async def asignar_enlace(
 
 @router.get(
     "/enlaces",
-    summary="ðŸ“‡ GET | Directorio de enlaces",
+    summary="📇 GET | Directorio de enlaces",
     response_model=List[EnlaceOut],
 )
 async def get_enlaces(

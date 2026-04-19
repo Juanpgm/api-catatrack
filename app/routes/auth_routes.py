@@ -1,5 +1,5 @@
-﻿"""
-Rutas de AdministraciÃ³n y Control de Accesos
+"""
+Rutas de Administración y Control de Accesos
 """
 from datetime import datetime, timezone, timedelta
 import logging
@@ -18,7 +18,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-router = APIRouter(tags=["AdministraciÃ³n y Control de Accesos"])
+router = APIRouter(tags=["Administración y Control de Accesos"])
 security = HTTPBearer()
 
 # Zona horaria Colombia (UTC-5)
@@ -31,7 +31,7 @@ def now_colombia() -> datetime:
 # Configurar rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
-# LÃ­mite configurable: usa REGISTER_RATE_LIMIT si existe, si no 10/minute
+# Límite configurable: usa REGISTER_RATE_LIMIT si existe, si no 10/minute
 _REGISTER_RATE_LIMIT = os.getenv("REGISTER_RATE_LIMIT", "10/minute")
 
 # Modelos
@@ -51,12 +51,12 @@ class UserRegistrationRequest(BaseModel):
     @classmethod
     def validate_password(cls, value: str) -> str:
         if len(value) < 8:
-            raise ValueError("La contraseÃ±a debe tener al menos 8 caracteres")
+            raise ValueError("La contraseña debe tener al menos 8 caracteres")
         return value
 
 class AssignRolesRequest(BaseModel):
     """Modelo para asignar roles"""
-    role: Optional[str] = Field(None, description="Rol Ãºnico activo")
+    role: Optional[str] = Field(None, description="Rol único activo")
     roles: Optional[List[str]] = Field(None, description="Compatibilidad legacy")
 
     @field_validator("role")
@@ -66,7 +66,7 @@ class AssignRolesRequest(BaseModel):
             return value
         value = value.strip()
         if not value:
-            raise ValueError("El rol no puede ser vacÃ­o")
+            raise ValueError("El rol no puede ser vacío")
         return value
 
     def get_single_role(self) -> str:
@@ -89,7 +89,7 @@ class GrantTemporaryPermissionRequest(BaseModel):
     def validate_permission_name(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("El permiso no puede ser vacÃ­o")
+            raise ValueError("El permiso no puede ser vacío")
         return value
 
     @field_validator("expires_at")
@@ -104,7 +104,7 @@ class GrantTemporaryPermissionRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
-    """Campos permitidos para actualizaciÃ³n de usuario."""
+    """Campos permitidos para actualización de usuario."""
 
     full_name: Optional[str] = None
     cellphone: Optional[str] = None
@@ -142,18 +142,18 @@ def _write_audit(action: str, actor: dict, details: dict):
     except Exception as audit_error:
         logging.warning(f"No se pudo escribir audit log: {audit_error}")
 
-# Endpoints de autenticaciÃ³n
+# Endpoints de autenticación
 @router.post("/auth/validate-session")
 async def validate_session(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    ## ðŸ” ValidaciÃ³n de SesiÃ³n Activa para Next.js
+    ## 🔐 Validación de Sesión Activa para Next.js
     
-    Valida si un token de ID de Firebase es vÃ¡lido y obtiene informaciÃ³n completa del usuario.
-    Optimizado para integraciÃ³n con Next.js y Firebase Auth SDK del frontend.
+    Valida si un token de ID de Firebase es válido y obtiene información completa del usuario.
+    Optimizado para integración con Next.js y Firebase Auth SDK del frontend.
     
-    ### âœ… Casos de uso:
-    - Middleware de autenticaciÃ³n en Next.js
-    - VerificaciÃ³n de permisos antes de acciones sensibles
+    ### ✅ Casos de uso:
+    - Middleware de autenticación en Next.js
+    - Verificación de permisos antes de acciones sensibles
     - Obtener datos actualizados del usuario
     """
     try:
@@ -182,20 +182,20 @@ async def validate_session(credentials: HTTPAuthorizationCredentials = Depends(s
             "timestamp": now_colombia().isoformat()
         }
     except Exception:
-        raise HTTPException(status_code=401, detail="Token invÃ¡lido")
+        raise HTTPException(status_code=401, detail="Token inválido")
 
 @router.post("/auth/login")
 @limiter.limit("5/minute")
 async def login_user(credentials: UserLoginRequest, request: Request):
     """
-    ## ðŸ” Login de Usuario con ID Token
+    ## 🔐 Login de Usuario con ID Token
     
-    Valida el ID token obtenido del frontend despuÃ©s de autenticaciÃ³n.
-    Retorna informaciÃ³n del usuario si vÃ¡lido.
+    Valida el ID token obtenido del frontend después de autenticación.
+    Retorna información del usuario si válido.
     
-    ### ðŸ“ Proceso:
+    ### 📝 Proceso:
     - Frontend autentica con Firebase SDK
-    - Frontend envÃ­a ID token al backend
+    - Frontend envía ID token al backend
     - Backend valida token y retorna datos del usuario
     """
     try:
@@ -204,8 +204,8 @@ async def login_user(credentials: UserLoginRequest, request: Request):
         uid = decoded_token['uid']
         user = auth_client.get_user(uid)
         
-        # Log de auditorÃ­a
-        logging.info(f"Usuario {user.email} iniciÃ³ sesiÃ³n exitosamente")
+        # Log de auditoría
+        logging.info(f"Usuario {user.email} inició sesión exitosamente")
         
         return {
             "success": True,
@@ -219,15 +219,15 @@ async def login_user(credentials: UserLoginRequest, request: Request):
         }
     except Exception as e:
         logging.warning(f"Intento de login fallido: {str(e)}")
-        raise HTTPException(status_code=401, detail="Token invÃ¡lido")
+        raise HTTPException(status_code=401, detail="Token inválido")
 
 @router.get("/auth/register/health-check")
 async def register_health_check():
     """
-    ## ðŸ” Health Check para Registro de Usuario
+    ## 🔍 Health Check para Registro de Usuario
     
-    Verifica que todos los servicios necesarios para el registro estÃ©n disponibles.
-    Ãštil para diagnosticar problemas en producciÃ³n.
+    Verifica que todos los servicios necesarios para el registro estén disponibles.
+    Útil para diagnosticar problemas en producción.
     """
     return {
         "firebase_auth": "available",
@@ -240,7 +240,7 @@ async def register_health_check():
 @limiter.limit(_REGISTER_RATE_LIMIT)
 async def register_user(user_data: UserRegistrationRequest, request: Request):
     """
-    ## âœ… Registro de Usuario Simplificado
+    ## ✅ Registro de Usuario Simplificado
     
     Registra un nuevo usuario en el sistema con Firebase Authentication.
     """
@@ -282,20 +282,20 @@ async def register_user(user_data: UserRegistrationRequest, request: Request):
 @router.post("/auth/change-password")
 async def change_password(
     uid: str = Form(..., description="ID del usuario"),
-    new_password: str = Form(..., description="Nueva contraseÃ±a"),
+    new_password: str = Form(..., description="Nueva contraseña"),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    ## ðŸ” Cambiar ContraseÃ±a de Usuario
+    ## 🔐 Cambiar Contraseña de Usuario
     
-    Permite cambiar la contraseÃ±a de un usuario existente.
+    Permite cambiar la contraseña de un usuario existente.
     """
     try:
         if current_user["uid"] != uid:
             require_permission(current_user, "manage:users")
 
         if len(new_password) < 8:
-            raise HTTPException(status_code=400, detail="La contraseÃ±a debe tener al menos 8 caracteres")
+            raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
 
         auth_client.update_user(uid, password=new_password)
 
@@ -307,7 +307,7 @@ async def change_password(
 
         return {
             "success": True,
-            "message": "ContraseÃ±a actualizada exitosamente",
+            "message": "Contraseña actualizada exitosamente",
             "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
@@ -327,22 +327,22 @@ async def get_workload_identity_status():
 @router.post("/auth/google")
 async def google_auth_unified(google_token: str = Form(..., description="ID Token de Google Sign-In")):
     """
-    ## ðŸ” AutenticaciÃ³n con Google (Unificado)
+    ## 🔐 Autenticación con Google (Unificado)
     
-    Endpoint unificado para autenticaciÃ³n con Google Sign-In.
+    Endpoint unificado para autenticación con Google Sign-In.
     Compatible con cualquier framework que haga HTTP requests.
     
-    ### ðŸ“± **Compatible con:**
+    ### 📱 **Compatible con:**
     - React, Vue, Angular, NextJS
-    - Aplicaciones mÃ³viles
+    - Aplicaciones móviles
     - Progressive Web Apps
     - Cualquier framework que haga HTTP requests
     
-    ### ðŸ”’ **Seguridad:**
+    ### 🔒 **Seguridad:**
     - Workload Identity Federation
-    - Sin credenciales en cÃ³digo
-    - VerificaciÃ³n automÃ¡tica con Google
-    - AuditorÃ­a completa de accesos
+    - Sin credenciales en código
+    - Verificación automática con Google
+    - Auditoría completa de accesos
     """
     try:
         decoded_token = auth_client.verify_id_token(google_token)
@@ -372,7 +372,7 @@ async def delete_user(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    ## ðŸ—‘ï¸ Eliminar Usuario
+    ## 🗑️ Eliminar Usuario
     
     Elimina un usuario del sistema.
     """
@@ -399,7 +399,7 @@ async def delete_user(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# Endpoints de administraciÃ³n
+# Endpoints de administración
 @router.get("/admin/users")
 async def list_system_users(
     limit: int = Query(50, ge=1, le=500),
@@ -407,9 +407,9 @@ async def list_system_users(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    ## ðŸ“‹ Listado de Usuarios desde Firestore
+    ## 📋 Listado de Usuarios desde Firestore
     
-    Lee directamente la colecciÃ³n "users" de Firestore y devuelve todos los usuarios registrados.
+    Lee directamente la colección "users" de Firestore y devuelve todos los usuarios registrados.
     """
     try:
         require_permission(current_user, "manage:users")
@@ -489,7 +489,7 @@ async def list_super_admin_users(
 
 @router.get("/auth/admin/users/{uid}")
 async def get_user_details(uid: str, current_user: dict = Depends(get_current_user)):
-    """Obtener detalles de un usuario especÃ­fico"""
+    """Obtener detalles de un usuario específico"""
     try:
         require_permission(current_user, "manage:users")
 
@@ -514,7 +514,7 @@ async def update_user_info(
     payload: UpdateUserRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Actualizar informaciÃ³n de usuario"""
+    """Actualizar información de usuario"""
     try:
         require_permission(current_user, "manage:users")
 
@@ -564,7 +564,7 @@ async def assign_roles_to_user(
 
         role = roles.get_single_role()
         if role not in ROLES:
-            raise HTTPException(status_code=400, detail=f"Rol invÃ¡lido: {role}")
+            raise HTTPException(status_code=400, detail=f"Rol inválido: {role}")
 
         user_ref = db.collection("users").document(uid)
         if not user_ref.get().exists:
@@ -720,7 +720,7 @@ async def get_audit_logs(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Obtener logs de auditorÃ­a.
+    Obtener logs de auditoría.
     Accesible por admin_general y super_admin.
     
     Requiere permiso: view:audit_logs
@@ -760,7 +760,7 @@ async def get_audit_logs(
 @router.get("/auth/admin/system/stats")
 async def get_system_stats(current_user: dict = Depends(get_current_user)):
     """
-    Obtener estadÃ­sticas del sistema de autorizaciÃ³n.
+    Obtener estadísticas del sistema de autorización.
     Accesible por super_admin.
     
     Requiere permiso: manage:users
@@ -791,8 +791,8 @@ async def get_system_stats(current_user: dict = Depends(get_current_user)):
 @router.get("/auth/config", dependencies=[Depends(security)])
 async def get_firebase_config(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    Obtener configuraciÃ³n de Firebase para el frontend (Protegido)
-    Requiere token de autenticaciÃ³n vÃ¡lido
+    Obtener configuración de Firebase para el frontend (Protegido)
+    Requiere token de autenticación válido
     """
     try:
         # Validar token antes de retornar config
@@ -807,5 +807,5 @@ async def get_firebase_config(credentials: HTTPAuthorizationCredentials = Depend
             "appId": os.getenv("FIREBASE_APP_ID", ""),
         }
     except Exception:
-        raise HTTPException(status_code=401, detail="Token invÃ¡lido")
+        raise HTTPException(status_code=401, detail="Token inválido")
 

@@ -3,7 +3,7 @@ API Task Tracker - Main Application
 """
 import logging
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter
@@ -16,7 +16,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('audit.log'),
+        logging.FileHandler('audit.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -44,6 +44,36 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+
+# Middleware ASGI puro para forzar charset=utf-8 en respuestas JSON
+# (No usa BaseHTTPMiddleware para evitar problemas con streaming)
+class UTF8JSONMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = dict(message.get("headers", []))
+                ct_key = b"content-type"
+                ct_val = headers.get(ct_key, b"")
+                if b"application/json" in ct_val and b"charset" not in ct_val:
+                    new_ct = ct_val + b"; charset=utf-8"
+                    new_headers = [
+                        (k, new_ct if k == ct_key else v)
+                        for k, v in message.get("headers", [])
+                    ]
+                    message = {**message, "headers": new_headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+app.add_middleware(UTF8JSONMiddleware)
 
 
 def _get_allowed_origins() -> list[str]:
@@ -118,7 +148,8 @@ async def global_exception_handler(request, exc):
             "success": False,
             "error": str(exc),
             "type": type(exc).__name__
-        }
+        },
+        media_type="application/json; charset=utf-8"
     )
 
 if __name__ == "__main__":
