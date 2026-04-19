@@ -54,6 +54,9 @@ def test_flujo_completo():
                 print(f"   {WARN} Sin coords (Nominatim no respondió)")
             print(f"   {'✅' if result.get('barrio_vereda') else WARN} barrio_vereda: {result.get('barrio_vereda')}")
             print(f"   {'✅' if result.get('comuna_corregimiento') else WARN} comuna_corregimiento: {result.get('comuna_corregimiento')}")
+            fuente = result.get("geocodificacion_fuente")
+            assert fuente in ("nominatim", "photon", "arcgis"), f"Proveedor inesperado: {fuente}"
+            print(f"   {PASS} geocodificacion_fuente: {fuente}")
             assert isinstance(result.get("acompanantes"), list)
             print(f"   {PASS} acompanantes: {len(result['acompanantes'])}")
             print(f"\n🎉 TEST 1 PASÓ — VID: {result.get('vid')}")

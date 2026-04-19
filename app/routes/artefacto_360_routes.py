@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Bod
 from typing import List, Optional
 from datetime import datetime
 import json
+import re
 import uuid
 import math
 import os
@@ -162,35 +163,182 @@ def geolocate_point(lon: float, lat: float) -> dict:
     return result
 
 
+# Cache en memoria para evitar geocodificar la misma dirección múltiples veces
+_GEOCODE_CACHE: dict = {}
+
+# Bounding box del municipio de Cali (incluye corregimientos rurales)
+_CALI_BBOX = {"lon_min": -76.75, "lon_max": -76.20, "lat_min": 3.10, "lat_max": 3.80}
+
+
+def _dentro_de_cali(lon: float, lat: float) -> bool:
+    """Verifica que las coordenadas estén dentro del área de Cali"""
+    b = _CALI_BBOX
+    return b["lon_min"] <= lon <= b["lon_max"] and b["lat_min"] <= lat <= b["lat_max"]
+
+
+def _normalizar_direccion_colombiana(direccion: str) -> list:
+    """
+    Genera variantes normalizadas de una dirección colombiana para maximizar
+    las posibilidades de geocodificación exitosa.
+    Maneja abreviaciones (Cl, Cra, Av, Dg, Tv), notación # vs No.,
+    y cuadrantes (6N → 6 Norte, 15S → 15 Sur).
+    """
+    clean = direccion.strip()
+    sufijo = ", Cali, Valle del Cauca, Colombia"
+
+    abreviaciones = [
+        (r'\bCl\.?\b', 'Calle'), (r'\bCll\.?\b', 'Calle'),
+        (r'\bCr\.?\b', 'Carrera'), (r'\bCra\.?\b', 'Carrera'), (r'\bKr\.?\b', 'Carrera'),
+        (r'\bAv\.?\b', 'Avenida'), (r'\bAvd\.?\b', 'Avenida'),
+        (r'\bDg\.?\b', 'Diagonal'), (r'\bDiag\.?\b', 'Diagonal'),
+        (r'\bTv\.?\b', 'Transversal'), (r'\bTvs\.?\b', 'Transversal'),
+        (r'\bCq\.?\b', 'Circular'),
+    ]
+    cuadrantes = {
+        'N': 'Norte', 'S': 'Sur', 'E': 'Este', 'O': 'Oeste',
+        'NE': 'Noreste', 'NO': 'Noroeste', 'SE': 'Sureste', 'SO': 'Suroeste',
+    }
+
+    expanded = clean
+    for pattern, repl in abreviaciones:
+        expanded = re.sub(pattern, repl, expanded, flags=re.IGNORECASE)
+    expanded = re.sub(
+        r'(\d)([NnSsEeOo]{1,2})\b',
+        lambda m: m.group(1) + ' ' + cuadrantes.get(m.group(2).upper(), m.group(2)),
+        expanded
+    )
+
+    variantes = []
+    variantes.append(f"{expanded}{sufijo}")
+    no_fmt = re.sub(r'\s*#\s*', ' No. ', expanded)
+    if no_fmt != expanded:
+        variantes.append(f"{no_fmt}{sufijo}")
+    if expanded.lower() != clean.lower():
+        variantes.append(f"{clean}{sufijo}")
+    main = re.split(r'\s*[#,]\s*', expanded)[0].strip()
+    if len(main) > 5 and main.lower() != expanded.lower():
+        variantes.append(f"{main}{sufijo}")
+
+    seen, unique = set(), []
+    for v in variantes:
+        if v not in seen:
+            seen.add(v)
+            unique.append(v)
+    return unique
+
+
+async def _geocode_nominatim(query: str, client: httpx.AsyncClient) -> Optional[dict]:
+    """Nominatim (OpenStreetMap) — gratuito, sin API key, 1 req/s"""
+    try:
+        r = await client.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": query, "format": "json", "limit": 1, "countrycodes": "co"},
+            headers={"User-Agent": "catatrack-api/1.0"},
+        )
+        r.raise_for_status()
+        results = r.json()
+        if results:
+            lat, lon = float(results[0]["lat"]), float(results[0]["lon"])
+            if _dentro_de_cali(lon, lat):
+                return {"lat": lat, "lon": lon, "proveedor": "nominatim"}
+    except Exception:
+        pass
+    return None
+
+
+async def _geocode_photon(query: str, client: httpx.AsyncClient) -> Optional[dict]:
+    """Photon (Komoot) — gratuito, basado en OSM, sin API key, mejor cobertura LATAM"""
+    try:
+        r = await client.get(
+            "https://photon.komoot.io/api/",
+            params={"q": query, "limit": 1, "lang": "es", "lat": "3.45", "lon": "-76.53"},
+        )
+        r.raise_for_status()
+        features = r.json().get("features", [])
+        if features:
+            lon, lat = features[0]["geometry"]["coordinates"][:2]
+            if _dentro_de_cali(lon, lat):
+                return {"lat": lat, "lon": lon, "proveedor": "photon"}
+    except Exception:
+        pass
+    return None
+
+
+async def _geocode_arcgis(query: str, client: httpx.AsyncClient) -> Optional[dict]:
+    """ArcGIS World Geocoding Service — acceso anónimo gratuito (1M req/mes)"""
+    try:
+        r = await client.get(
+            "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+            params={
+                "SingleLine": query,
+                "f": "json",
+                "maxLocations": 1,
+                "countryCode": "COL",
+                "outFields": "Match_addr",
+            },
+        )
+        r.raise_for_status()
+        candidates = r.json().get("candidates", [])
+        if candidates and candidates[0].get("score", 0) >= 70:
+            loc = candidates[0]["location"]
+            lon, lat = loc["x"], loc["y"]
+            if _dentro_de_cali(lon, lat):
+                return {"lat": lat, "lon": lon, "proveedor": "arcgis"}
+    except Exception:
+        pass
+    return None
+
+
 async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
     """
-    Geocodifica una dirección en Cali, Valle del Cauca usando Nominatim (OpenStreetMap).
-    Retorna dict con 'lat', 'lon', o None si no encuentra resultados.
+    Geocodifica una dirección en Cali con cadena de proveedores y fallback automático.
+
+    Estrategia:
+      1. Consulta caché en memoria (evita llamadas redundantes).
+      2. Normaliza la dirección colombiana en múltiples variantes
+         (abreviaciones, notación #/No., cuadrantes N/S/E/O).
+      3. Intenta cada variante con Nominatim (OpenStreetMap).
+      4. Si falla, intenta con Photon (Komoot, también OSM).
+      5. Si falla, intenta con ArcGIS World Geocoding Service.
+      6. Valida que las coordenadas resultantes estén dentro del bbox de Cali.
+      7. Almacena el resultado en caché.
+
+    Todos los proveedores son gratuitos y no requieren API key.
+    Retorna dict con 'lat', 'lon', 'proveedor', o None si todos fallan.
     """
-    query = f"{direccion}, Cali, Valle del Cauca, Colombia"
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {
-        "q": query,
-        "format": "json",
-        "limit": 1,
-        "countrycodes": "co"
-    }
-    headers = {"User-Agent": "catatrack-api/1.0"}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            results = response.json()
-        if not results:
-            print(f"⚠️ Nominatim sin resultados para: {query}")
-            return None
-        lat = float(results[0]["lat"])
-        lon = float(results[0]["lon"])
-        print(f"✅ Geocodificación: {query} → [{lon}, {lat}]")
-        return {"lat": lat, "lon": lon}
-    except Exception as e:
-        print(f"⚠️ Error geocodificando '{query}': {str(e)}")
-        return None
+    clave = direccion.strip().lower()
+    if clave in _GEOCODE_CACHE:
+        cached = _GEOCODE_CACHE[clave]
+        print(f"💾 Geocodificación (caché): '{direccion}' → [{cached['lon']}, {cached['lat']}]")
+        return cached
+
+    variantes = _normalizar_direccion_colombiana(direccion)
+    print(f"🔍 Geocodificando '{direccion}' ({len(variantes)} variantes)...")
+
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        for query in variantes:
+            result = await _geocode_nominatim(query, client)
+            if result:
+                print(f"✅ [{result['proveedor']}] '{query}' → [{result['lon']}, {result['lat']}]")
+                _GEOCODE_CACHE[clave] = result
+                return result
+
+        for query in variantes[:2]:
+            result = await _geocode_photon(query, client)
+            if result:
+                print(f"✅ [{result['proveedor']}] '{query}' → [{result['lon']}, {result['lat']}]")
+                _GEOCODE_CACHE[clave] = result
+                return result
+
+        for query in variantes[:2]:
+            result = await _geocode_arcgis(query, client)
+            if result:
+                print(f"✅ [{result['proveedor']}] '{query}' → [{result['lon']}, {result['lat']}]")
+                _GEOCODE_CACHE[clave] = result
+                return result
+
+    print(f"⚠️ Sin resultados en ningún proveedor para: '{direccion}'")
+    return None
 
 
 # ==================== MODELOS ====================#
@@ -219,6 +367,7 @@ class RegistroVisitaResponse(BaseModel):
     message: str
     direccion_visita: str
     coords: Optional[dict]
+    geocodificacion_fuente: Optional[str]
     barrio_vereda: Optional[str]
     comuna_corregimiento: Optional[str]
     descripcion_visita: str
@@ -458,12 +607,14 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
         # Geocodificar dirección → coordenadas WGS84
         geo = await geocodificar_direccion_cali(direccion_visita)
         coords_dict = None
+        geocodificacion_fuente = None
         barrio_vereda = None
         comuna_corregimiento = None
 
         if geo:
             lat = geo["lat"]
             lon = geo["lon"]
+            geocodificacion_fuente = geo.get("proveedor")
             coords_dict = {"type": "Point", "coordinates": [lon, lat]}
             # Intersección geográfica con basemaps
             geo_result = geolocate_point(lon, lat)
@@ -499,6 +650,7 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             "vid_number": new_vid_number,
             "direccion_visita": direccion_visita,
             "coords": coords_dict,
+            "geocodificacion_fuente": geocodificacion_fuente,
             "barrio_vereda": barrio_vereda,
             "comuna_corregimiento": comuna_corregimiento,
             "descripcion_visita": descripcion_visita,
@@ -527,6 +679,7 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             message="Visita registrada exitosamente",
             direccion_visita=direccion_visita,
             coords=coords_dict,
+            geocodificacion_fuente=geocodificacion_fuente,
             barrio_vereda=barrio_vereda,
             comuna_corregimiento=comuna_corregimiento,
             descripcion_visita=descripcion_visita,

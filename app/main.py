@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -66,7 +66,23 @@ def _get_allowed_origins() -> list[str]:
 # Configurar rate limiting
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+def _rate_limit_handler(request, exc: RateLimitExceeded):
+    retry_after = getattr(exc, "retry_after", 60)
+    return JSONResponse(
+        status_code=429,
+        content={
+            "success": False,
+            "detail": (
+                f"Demasiadas solicitudes. Has superado el límite de peticiones. "
+                f"Intenta de nuevo en {retry_after} segundo(s)."
+            ),
+            "retry_after_seconds": retry_after,
+        },
+        headers={"Retry-After": str(retry_after)},
+    )
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
 # Agregar middleware de rate limiting
 app.add_middleware(SlowAPIMiddleware)

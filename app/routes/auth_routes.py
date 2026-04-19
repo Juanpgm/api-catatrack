@@ -16,12 +16,16 @@ from app.auth_system.permissions import get_user_permissions, require_any_permis
 from app.firebase_config import auth_client, db
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 router = APIRouter(tags=["Administración y Control de Accesos"])
 security = HTTPBearer()
 
 # Configurar rate limiter
 limiter = Limiter(key_func=get_remote_address)
+
+# Límite configurable: usa REGISTER_RATE_LIMIT si existe, si no 10/minute
+_REGISTER_RATE_LIMIT = os.getenv("REGISTER_RATE_LIMIT", "10/minute")
 
 # Modelos
 class UserLoginRequest(BaseModel):
@@ -226,7 +230,7 @@ async def register_health_check():
 
 @router.post("/auth/register")
 @router.post("/auth/register/", include_in_schema=False)
-@limiter.limit("3/minute")
+@limiter.limit(_REGISTER_RATE_LIMIT)
 async def register_user(user_data: UserRegistrationRequest, request: Request):
     """
     ## ✅ Registro de Usuario Simplificado
