@@ -26,6 +26,7 @@ def test_registrar_requerimiento_sin_audio():
     data = {
         "vid": "VID-1",
         "datos_solicitante": datos_solicitante,
+        "tipo_requerimiento": "Infraestructura vial",
         "requerimiento": "Solicitud de mejoramiento vial en la Calle 5",
         "observaciones": "La vía presenta baches profundos que dificultan el tránsito vehicular",
         "coords": coords,
@@ -72,6 +73,7 @@ def test_registrar_requerimiento_con_audio():
     data = {
         "vid": "VID-1",
         "datos_solicitante": datos_solicitante,
+        "tipo_requerimiento": "Medio ambiente",
         "requerimiento": "Solicitud de fumigación en zona verde",
         "observaciones": "Presencia de mosquitos y plagas en el parque",
         "coords": coords,
@@ -118,6 +120,7 @@ def test_validaciones():
     data = {
         "vid": "VID-1",
         "datos_solicitante": datos_solicitante,
+        "tipo_requerimiento": "Test",
         "requerimiento": "Test",
         "observaciones": "Test",
         "coords": coords_invalidas,
@@ -158,6 +161,7 @@ def test_rid_incremental():
         data = {
             "vid": "VID-TEST",
             "datos_solicitante": datos_solicitante,
+            "tipo_requerimiento": "General",
             "requerimiento": f"Requerimiento de prueba {i}",
             "observaciones": f"Observación {i}",
             "coords": coords,
