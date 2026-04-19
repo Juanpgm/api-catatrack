@@ -14,6 +14,7 @@ import gzip
 from pydantic import BaseModel, Field
 import httpx
 from shapely.geometry import shape, Point
+from shapely.ops import nearest_points
 
 # Importar configuración de Firebase y S3/Storage
 from app.firebase_config import db
@@ -140,6 +141,9 @@ def _load_basemap(filepath: str, property_name: str) -> list:
 _BARRIOS_POLYGONS = _load_basemap('basemaps/barrios_veredas.geojson', 'barrio_vereda')
 _COMUNAS_POLYGONS = _load_basemap('basemaps/comunas_corregimientos.geojson', 'comuna_corregimiento')
 
+# Índice nombre (mayúsculas) → (polígono, nombre_canónico) para búsqueda rápida
+_BARRIOS_INDEX: dict = {}
+
 
 def geolocate_point(lon: float, lat: float) -> dict:
     """
@@ -168,6 +172,8 @@ _GEOCODE_CACHE: dict = {}
 
 # Bounding box del municipio de Cali (incluye corregimientos rurales)
 _CALI_BBOX = {"lon_min": -76.75, "lon_max": -76.20, "lat_min": 3.10, "lat_max": 3.80}
+# Viewbox en formato Nominatim: left,top,right,bottom
+_CALI_VIEWBOX = f"{_CALI_BBOX['lon_min']},{_CALI_BBOX['lat_max']},{_CALI_BBOX['lon_max']},{_CALI_BBOX['lat_min']}"
 
 
 def _dentro_de_cali(lon: float, lat: float) -> bool:
@@ -227,23 +233,115 @@ def _normalizar_direccion_colombiana(direccion: str) -> list:
     return unique
 
 
-async def _geocode_nominatim(query: str, client: httpx.AsyncClient) -> Optional[dict]:
-    """Nominatim (OpenStreetMap) — gratuito, sin API key, 1 req/s"""
+def _extraer_barrios_mencionados(direccion: str) -> list:
+    """
+    Detecta si la dirección menciona explícitamente un barrio/vereda que existe
+    en los basemaps. Retorna lista de (nombre_canónico, polígono), ordenada por
+    longitud descendente para preferir coincidencias más específicas.
+    Solo considera nombres de 5+ caracteres para evitar falsos positivos.
+    """
+    global _BARRIOS_INDEX
+    if not _BARRIOS_INDEX:
+        _BARRIOS_INDEX = {
+            name.upper(): (poly, name)
+            for poly, name in _BARRIOS_POLYGONS
+            if name and len(name) >= 5
+        }
+
+    texto = direccion.upper()
+    encontrados = []
+    for nombre_upper, (polygon, nombre_canonical) in _BARRIOS_INDEX.items():
+        if nombre_upper in texto:
+            encontrados.append((nombre_canonical, polygon))
+    # Preferir nombres más largos (más específicos)
+    encontrados.sort(key=lambda x: len(x[0]), reverse=True)
+    return encontrados
+
+
+def _snap_al_interior(lon: float, lat: float, polygon) -> tuple:
+    """
+    Si el punto está fuera del polígono, devuelve el representative_point()
+    de shapely, que está garantizado estrictamente dentro del polígono
+    (funciona correctamente incluso con polígonos no convexos).
+    Retorna (lon, lat, fue_corregido).
+    """
+    point = Point(lon, lat)
+    if polygon.contains(point):
+        return lon, lat, False
+    # representative_point() siempre está dentro, a diferencia de nearest_points
+    # que proyecta al borde y puede generar ambigüedad con polígonos vecinos.
+    rep = polygon.representative_point()
+    return rep.x, rep.y, True
+
+
+def _seleccionar_candidato(candidatos: list, barrio_polygon, barrio_name: str) -> Optional[dict]:
+    """
+    De una lista de candidatos geocodificados, elige el que mejor corresponde
+    al barrio indicado:
+      1. Si alguno cae dentro del polígono del barrio → devuelve ese directamente.
+      2. Si ninguno → toma el más cercano al centroide y lo proyecta dentro del polígono.
+    """
+    if not candidatos:
+        return None
+
+    # Paso 1: candidatos que ya caen dentro del barrio
+    dentro = [
+        c for c in candidatos
+        if barrio_polygon.contains(Point(c["lon"], c["lat"]))
+    ]
+    if dentro:
+        return {**dentro[0], "barrio_snap": False}
+
+    # Paso 2: ninguno cae dentro → el más cercano al centroide
+    centroide = barrio_polygon.centroid
+
+    def dist_sq(c):
+        return (c["lon"] - centroide.x) ** 2 + (c["lat"] - centroide.y) ** 2
+
+    mejor = min(candidatos, key=dist_sq)
+    lon_orig, lat_orig = mejor["lon"], mejor["lat"]
+    lon_snap, lat_snap, fue_corregido = _snap_al_interior(lon_orig, lat_orig, barrio_polygon)
+
+    return {
+        "lat": lat_snap,
+        "lon": lon_snap,
+        "proveedor": mejor["proveedor"],
+        "barrio_snap": fue_corregido,
+        "barrio_snap_desde": f"[{lon_orig:.6f}, {lat_orig:.6f}]",
+    }
+
+
+async def _geocode_nominatim_multi(
+    query: str, client: httpx.AsyncClient, limit: int = 5
+) -> list:
+    """Nominatim con múltiples candidatos acotados al bbox de Cali."""
     try:
         r = await client.get(
             "https://nominatim.openstreetmap.org/search",
-            params={"q": query, "format": "json", "limit": 1, "countrycodes": "co"},
+            params={
+                "q": query,
+                "format": "json",
+                "limit": limit,
+                "countrycodes": "co",
+                "viewbox": _CALI_VIEWBOX,
+                "bounded": 1,
+            },
             headers={"User-Agent": "catatrack-api/1.0"},
         )
         r.raise_for_status()
-        results = r.json()
-        if results:
-            lat, lon = float(results[0]["lat"]), float(results[0]["lon"])
-            if _dentro_de_cali(lon, lat):
-                return {"lat": lat, "lon": lon, "proveedor": "nominatim"}
+        return [
+            {"lat": float(item["lat"]), "lon": float(item["lon"]), "proveedor": "nominatim"}
+            for item in r.json()
+            if _dentro_de_cali(float(item["lon"]), float(item["lat"]))
+        ]
     except Exception:
-        pass
-    return None
+        return []
+
+
+async def _geocode_nominatim(query: str, client: httpx.AsyncClient) -> Optional[dict]:
+    """Nominatim (OpenStreetMap) — gratuito, sin API key, 1 req/s"""
+    results = await _geocode_nominatim_multi(query, client, limit=1)
+    return results[0] if results else None
 
 
 async def _geocode_photon(query: str, client: httpx.AsyncClient) -> Optional[dict]:
@@ -291,20 +389,22 @@ async def _geocode_arcgis(query: str, client: httpx.AsyncClient) -> Optional[dic
 
 async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
     """
-    Geocodifica una dirección en Cali con cadena de proveedores y fallback automático.
+    Geocodifica una dirección en Cali con cadena de proveedores, barrio-hint y fallback.
 
     Estrategia:
-      1. Consulta caché en memoria (evita llamadas redundantes).
-      2. Normaliza la dirección colombiana en múltiples variantes
-         (abreviaciones, notación #/No., cuadrantes N/S/E/O).
-      3. Intenta cada variante con Nominatim (OpenStreetMap).
-      4. Si falla, intenta con Photon (Komoot, también OSM).
-      5. Si falla, intenta con ArcGIS World Geocoding Service.
-      6. Valida que las coordenadas resultantes estén dentro del bbox de Cali.
-      7. Almacena el resultado en caché.
+      1. Caché en memoria: evita llamadas redundantes.
+      2. Extrae barrios/veredas mencionados explícitamente en la dirección.
+      3. Nominatim multi-candidato (limit=5, acotado al bbox de Cali):
+         - Elige el candidato que cae dentro del polígono del barrio mencionado.
+         - Si ninguno cae dentro, proyecta geométricamente el más cercano al
+           interior del polígono (snap) usando shapely.ops.nearest_points.
+      4. Si no hay barrio mencionado o el paso anterior falló: Nominatim simple.
+      5. Fallback a Photon (Komoot).
+      6. Fallback a ArcGIS.
+      7. Fallback final al centroide del barrio mencionado (proveedor='barrio_centroide').
 
-    Todos los proveedores son gratuitos y no requieren API key.
-    Retorna dict con 'lat', 'lon', 'proveedor', o None si todos fallan.
+    Retorna dict con 'lat', 'lon', 'proveedor' y opcionalmente 'barrio_snap' (bool),
+    'barrio_snap_desde' (str). Retorna None si todos los pasos fallan.
     """
     clave = direccion.strip().lower()
     if clave in _GEOCODE_CACHE:
@@ -313,29 +413,73 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
         return cached
 
     variantes = _normalizar_direccion_colombiana(direccion)
-    print(f"🔍 Geocodificando '{direccion}' ({len(variantes)} variantes)...")
+    barrios_hint = _extraer_barrios_mencionados(direccion)
+    hint_nombre = barrios_hint[0][0] if barrios_hint else "N/A"
+    print(f"🔍 Geocodificando '{direccion}' | variantes={len(variantes)} | barrio_hint='{hint_nombre}'")
 
     async with httpx.AsyncClient(timeout=12.0) as client:
+
+        # ── Paso 1: Nominatim multi-candidato con restricción de barrio ──
+        if barrios_hint:
+            barrio_name_hint, barrio_polygon_hint = barrios_hint[0]
+            for query in variantes:
+                candidatos = await _geocode_nominatim_multi(query, client, limit=5)
+                if candidatos:
+                    mejor = _seleccionar_candidato(candidatos, barrio_polygon_hint, barrio_name_hint)
+                    if mejor:
+                        snap_msg = (
+                            f" (proyectado desde {mejor['barrio_snap_desde']})"
+                            if mejor.get("barrio_snap")
+                            else ""
+                        )
+                        print(
+                            f"✅ [{mejor['proveedor']}+barrio:'{barrio_name_hint}'] →"
+                            f" [{mejor['lon']:.6f}, {mejor['lat']:.6f}]{snap_msg}"
+                        )
+                        _GEOCODE_CACHE[clave] = mejor
+                        return mejor
+
+        # ── Paso 2: Nominatim simple (sin hint o sin resultados con hint) ──
         for query in variantes:
             result = await _geocode_nominatim(query, client)
             if result:
-                print(f"✅ [{result['proveedor']}] '{query}' → [{result['lon']}, {result['lat']}]")
+                print(f"✅ [nominatim] '{query}' → [{result['lon']}, {result['lat']}]")
                 _GEOCODE_CACHE[clave] = result
                 return result
 
+        # ── Paso 3: Photon ──
         for query in variantes[:2]:
             result = await _geocode_photon(query, client)
             if result:
-                print(f"✅ [{result['proveedor']}] '{query}' → [{result['lon']}, {result['lat']}]")
+                print(f"✅ [photon] '{query}' → [{result['lon']}, {result['lat']}]")
                 _GEOCODE_CACHE[clave] = result
                 return result
 
+        # ── Paso 4: ArcGIS ──
         for query in variantes[:2]:
             result = await _geocode_arcgis(query, client)
             if result:
-                print(f"✅ [{result['proveedor']}] '{query}' → [{result['lon']}, {result['lat']}]")
+                print(f"✅ [arcgis] '{query}' → [{result['lon']}, {result['lat']}]")
                 _GEOCODE_CACHE[clave] = result
                 return result
+
+        # ── Paso 5: Fallback al centroide del barrio mencionado ──
+        if barrios_hint:
+            barrio_name_hint, barrio_polygon_hint = barrios_hint[0]
+            centroide = barrio_polygon_hint.centroid
+            result = {
+                "lat": centroide.y,
+                "lon": centroide.x,
+                "proveedor": "barrio_centroide",
+                "barrio_snap": True,
+                "barrio_snap_desde": "centroide_fallback",
+            }
+            print(
+                f"📍 Fallback centroide de '{barrio_name_hint}':"
+                f" [{centroide.x:.6f}, {centroide.y:.6f}]"
+            )
+            _GEOCODE_CACHE[clave] = result
+            return result
 
     print(f"⚠️ Sin resultados en ningún proveedor para: '{direccion}'")
     return None

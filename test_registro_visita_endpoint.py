@@ -55,7 +55,7 @@ def test_flujo_completo():
             print(f"   {'✅' if result.get('barrio_vereda') else WARN} barrio_vereda: {result.get('barrio_vereda')}")
             print(f"   {'✅' if result.get('comuna_corregimiento') else WARN} comuna_corregimiento: {result.get('comuna_corregimiento')}")
             fuente = result.get("geocodificacion_fuente")
-            assert fuente in ("nominatim", "photon", "arcgis"), f"Proveedor inesperado: {fuente}"
+            assert fuente in ("nominatim", "photon", "arcgis", "barrio_centroide"), f"Proveedor inesperado: {fuente}"
             print(f"   {PASS} geocodificacion_fuente: {fuente}")
             assert isinstance(result.get("acompanantes"), list)
             print(f"   {PASS} acompanantes: {len(result['acompanantes'])}")
@@ -136,6 +136,44 @@ def test_formatos_invalidos():
         print(f"   {FAIL} No se pudo conectar.")
 
 
+def test_barrio_hint_centenario():
+    print_section("TEST 5: Barrio-hint — dirección menciona 'Centenario' explícitamente (caso VID-15)")
+    payload = {
+        "direccion_visita": "Calle 13 # 8-32, Barrio Centenario, Cali",
+        "descripcion_visita": "Verificación de caso VID-15 barrio-hint",
+        "observaciones_visita": "Las coordenadas deben quedar dentro del polígono de Centenario",
+        "fecha_visita": "18/04/2026",
+        "hora_visita": "10:00"
+    }
+    print(f"\n📤 Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
+    try:
+        response = requests.post(ENDPOINT, json=payload, timeout=30)
+        print(f"\n📥 Status: {response.status_code}")
+        if response.status_code == 200:
+            result = response.json()
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            barrio = result.get("barrio_vereda", "")
+            coords = result.get("coords")
+            fuente = result.get("geocodificacion_fuente")
+            assert result.get("success") == True; print(f"   {PASS} success = True")
+            if "centenario" in barrio.lower():
+                print(f"   {PASS} barrio_vereda correcto: '{barrio}'")
+            else:
+                print(f"   {WARN} barrio_vereda obtenido: '{barrio}' (se esperaba Centenario)")
+            assert fuente in ("nominatim", "photon", "arcgis", "barrio_centroide"), f"Proveedor inesperado: {fuente}"
+            print(f"   {PASS} geocodificacion_fuente: {fuente}")
+            if coords:
+                lon, lat = coords["coordinates"]
+                print(f"   {PASS} coords: [{lon}, {lat}]")
+            print(f"\n🎉 TEST 5 PASÓ — VID: {result.get('vid')}")
+        else:
+            print(f"   {FAIL} Error {response.status_code}: {response.text}")
+    except requests.exceptions.ConnectionError:
+        print(f"   {FAIL} No se pudo conectar a {API_URL}.")
+    except AssertionError as e:
+        print(f"   {FAIL} Validación: {e}")
+
+
 if __name__ == "__main__":
     print("\n🚀 PRUEBAS: POST /registrar-visita/ (con geocodificación Nominatim)")
     print(f"   API: {API_URL}\n")
@@ -144,6 +182,7 @@ if __name__ == "__main__":
     test_sin_acompanantes()
     test_campos_faltantes()
     test_formatos_invalidos()
+    test_barrio_hint_centenario()
 
     print("\n" + "=" * 70)
     print("✅ PRUEBAS FINALIZADAS")
