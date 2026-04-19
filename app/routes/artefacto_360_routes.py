@@ -2069,35 +2069,49 @@ async def post_registrar_requerimiento(
         documentos_urls = []
         if fotos:
             try:
+                import mimetypes
                 s3_client_fotos = get_s3_client()
                 bucket_name_fotos = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
-                allowed_doc_types = [
-                    "image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic",
-                    "application/pdf",
-                ]
-                for foto in fotos:
+                allowed_extensions = {
+                    ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
+                    ".pdf", ".gif", ".bmp", ".tiff", ".tif",
+                }
+                print(f"📎 Recibidas {len(fotos)} fotos/documentos para {vid}/{rid}")
+                for i, foto in enumerate(fotos):
                     if not foto or not foto.filename:
+                        print(f"  ⏭️ foto[{i}]: sin archivo o nombre vacío, omitido")
                         continue
-                    if foto.content_type not in allowed_doc_types:
-                        print(f"⚠️ Tipo no permitido, omitido: {foto.filename} ({foto.content_type})")
+                    # Determinar content_type real: preferir extensión del archivo
+                    ext = os.path.splitext(foto.filename)[1].lower()
+                    guessed_type, _ = mimetypes.guess_type(foto.filename)
+                    content_type = foto.content_type
+                    if content_type in (None, "", "application/octet-stream") and guessed_type:
+                        content_type = guessed_type
+                    print(f"  📄 foto[{i}]: {foto.filename} | ext={ext} | content_type_original={foto.content_type} | content_type_final={content_type}")
+                    # Validar por extensión (más confiable que content_type del cliente)
+                    if ext not in allowed_extensions:
+                        print(f"  ⚠️ Extensión no permitida, omitido: {foto.filename} (ext={ext})")
                         continue
                     file_content = await foto.read()
                     if len(file_content) == 0:
+                        print(f"  ⏭️ foto[{i}]: archivo vacío (0 bytes), omitido")
                         continue
                     safe_name = re.sub(r'[^\w.\-]', '_', foto.filename)
                     s3_key = f"requerimientos/{vid}/{rid}/{uuid.uuid4().hex}_{safe_name}"
                     s3_client_fotos.put_object(
                         Bucket=bucket_name_fotos, Key=s3_key,
-                        Body=file_content, ContentType=foto.content_type,
+                        Body=file_content, ContentType=content_type or "application/octet-stream",
                     )
                     documentos_urls.append({
                         "filename": foto.filename, "s3_key": s3_key,
                         "s3_url": f"https://{bucket_name_fotos}.s3.amazonaws.com/{s3_key}",
-                        "content_type": foto.content_type, "size": len(file_content),
+                        "content_type": content_type or "application/octet-stream", "size": len(file_content),
                     })
-                    print(f"✅ Documento subido a S3: {s3_key} ({len(file_content)} bytes)")
+                    print(f"  ✅ Documento subido a S3: {s3_key} ({len(file_content)} bytes)")
             except Exception as e:
+                import traceback
                 print(f"⚠️ Error subiendo fotos/documentos: {str(e)}")
+                traceback.print_exc()
 
         # Capturar fecha y hora de registro
         fecha_registro = datetime.utcnow()
