@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 import httpx
 from shapely.geometry import shape, Point
 from shapely.ops import nearest_points
-from openai import OpenAI
+from faster_whisper import WhisperModel
 
 # Importar configuración de Firebase y S3/Storage
 from app.firebase_config import db
@@ -25,37 +25,49 @@ from botocore.exceptions import ClientError
 from botocore.config import Config as BotoConfig
 
 
-# ==================== WHISPER TRANSCRIPCIÓN ====================
+# ==================== WHISPER TRANSCRIPCIÓN (LOCAL, GRATUITO) ====================
+_whisper_model = None
+
+def _get_whisper_model():
+    """Carga el modelo Whisper una sola vez (singleton)."""
+    global _whisper_model
+    if _whisper_model is None:
+        model_size = os.getenv("WHISPER_MODEL_SIZE", "base")
+        print(f"🔄 Cargando modelo faster-whisper '{model_size}'...")
+        _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        print(f"✅ Modelo faster-whisper '{model_size}' cargado")
+    return _whisper_model
+
+
 def _transcribir_audio_whisper(audio_bytes: bytes, filename: str, language: str = "es") -> Optional[dict]:
     """
-    Transcribe audio usando la API de OpenAI Whisper.
+    Transcribe audio usando faster-whisper (local, gratuito).
     Retorna un dict con la transcripción o None si falla.
-    Requiere la variable de entorno OPENAI_API_KEY.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("⚠️ OPENAI_API_KEY no configurada. Transcripción omitida.")
-        return None
+    import tempfile
 
     try:
-        client = OpenAI(api_key=api_key)
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = filename  # OpenAI necesita el nombre para detectar formato
+        model = _get_whisper_model()
 
-        result = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language=language,
-            response_format="verbose_json"
-        )
+        # faster-whisper necesita un archivo en disco
+        ext = os.path.splitext(filename)[1] or ".wav"
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        try:
+            segments, info = model.transcribe(tmp_path, language=language, beam_size=5)
+            texto = " ".join(seg.text.strip() for seg in segments)
+        finally:
+            os.unlink(tmp_path)
 
         transcripcion = {
             "archivo": filename,
-            "transcripcion": result.text,
-            "idioma": language,
-            "duracion_segundos": getattr(result, "duration", None),
+            "transcripcion": texto,
+            "idioma": info.language,
+            "duracion_segundos": round(info.duration, 2),
         }
-        print(f"✅ Transcripción completada: {len(result.text)} caracteres")
+        print(f"✅ Transcripción completada: {len(texto)} caracteres, {info.duration:.1f}s")
         return transcripcion
 
     except Exception as e:
