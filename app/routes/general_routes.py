@@ -1,77 +1,84 @@
-"""
+﻿"""
 Rutas generales - Health checks y endpoints de utilidad
 """
 from fastapi import APIRouter
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import platform
 import os
 
 router = APIRouter(tags=["General"])
 
+# Zona horaria Colombia (UTC-5)
+_COL_TZ = timezone(timedelta(hours=-5))
+
+def now_colombia() -> datetime:
+    """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
+    return datetime.now(_COL_TZ)
+
 @router.get("/ping")
 async def ping():
     """
-    🔵 GET | ❤️ Health Check | Health check super simple para Railway con soporte UTF-8
+    ðŸ”µ GET | â¤ï¸ Health Check | Health check super simple para Railway con soporte UTF-8
     """
     return {
         "status": "ok",
-        "message": "¡Pong! 🏓",
-        "timestamp": datetime.utcnow().isoformat(),
-        "utf8_test": "Funciona correctamente con caracteres especiales: á é í ó ú ñ"
+        "message": "Â¡Pong! ðŸ“",
+        "timestamp": now_colombia().isoformat(),
+        "utf8_test": "Funciona correctamente con caracteres especiales: Ã¡ Ã© Ã­ Ã³ Ãº Ã±"
     }
 
 @router.get("/cors-test")
 async def cors_test():
     """
-    Endpoint específico para probar configuración CORS
+    Endpoint especÃ­fico para probar configuraciÃ³n CORS
     """
     return {
         "cors": "enabled",
         "message": "CORS configurado correctamente",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now_colombia().isoformat()
     }
 
 @router.options("/cors-test")
 async def cors_test_options():
     """
-    OPTIONS handler específico para CORS test
+    OPTIONS handler especÃ­fico para CORS test
     """
     return {"message": "OPTIONS request successful"}
 
 @router.get("/test/utf8")
 async def test_utf8():
     """
-    Endpoint de prueba específico para caracteres UTF-8 en español
+    Endpoint de prueba especÃ­fico para caracteres UTF-8 en espaÃ±ol
     """
     return {
         "test": "UTF-8",
-        "español": "Caracteres especiales: á é í ó ú ñ Ñ",
-        "symbols": "© ® ™ € £ ¥",
-        "message": "Todos los caracteres UTF-8 funcionan correctamente ✓"
+        "espaÃ±ol": "Caracteres especiales: Ã¡ Ã© Ã­ Ã³ Ãº Ã± Ã‘",
+        "symbols": "Â© Â® â„¢ â‚¬ Â£ Â¥",
+        "message": "Todos los caracteres UTF-8 funcionan correctamente âœ“"
     }
 
 @router.get("/debug/railway")
 async def railway_debug():
     """
-    Debug específico para Railway - Diagnóstico simplificado
+    Debug especÃ­fico para Railway - DiagnÃ³stico simplificado
     """
     return {
         "platform": platform.system(),
         "python_version": platform.python_version(),
         "environment": os.environ.get("RAILWAY_ENVIRONMENT", "local"),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now_colombia().isoformat()
     }
 
 @router.get("/health")
 async def health_check():
     """
-    🔵 GET | ❤️ Health Check | Verificar estado de salud de la API
+    ðŸ”µ GET | â¤ï¸ Health Check | Verificar estado de salud de la API
     
-    Endpoint completo de health check con información del sistema
+    Endpoint completo de health check con informaciÃ³n del sistema
     """
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_colombia().isoformat(),
         "service": "API Artefacto 360 DAGMA",
         "version": "1.0.0",
         "uptime": "OK",
@@ -81,3 +88,4 @@ async def health_check():
             "storage": "ok"
         }
     }
+

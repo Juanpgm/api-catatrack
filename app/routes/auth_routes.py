@@ -1,7 +1,7 @@
+﻿"""
+Rutas de AdministraciÃ³n y Control de Accesos
 """
-Rutas de Administración y Control de Accesos
-"""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 import os
 from typing import Any, List, Optional
@@ -18,13 +18,20 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-router = APIRouter(tags=["Administración y Control de Accesos"])
+router = APIRouter(tags=["AdministraciÃ³n y Control de Accesos"])
 security = HTTPBearer()
+
+# Zona horaria Colombia (UTC-5)
+_COL_TZ = timezone(timedelta(hours=-5))
+
+def now_colombia() -> datetime:
+    """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
+    return datetime.now(_COL_TZ)
 
 # Configurar rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
-# Límite configurable: usa REGISTER_RATE_LIMIT si existe, si no 10/minute
+# LÃ­mite configurable: usa REGISTER_RATE_LIMIT si existe, si no 10/minute
 _REGISTER_RATE_LIMIT = os.getenv("REGISTER_RATE_LIMIT", "10/minute")
 
 # Modelos
@@ -44,12 +51,12 @@ class UserRegistrationRequest(BaseModel):
     @classmethod
     def validate_password(cls, value: str) -> str:
         if len(value) < 8:
-            raise ValueError("La contraseña debe tener al menos 8 caracteres")
+            raise ValueError("La contraseÃ±a debe tener al menos 8 caracteres")
         return value
 
 class AssignRolesRequest(BaseModel):
     """Modelo para asignar roles"""
-    role: Optional[str] = Field(None, description="Rol único activo")
+    role: Optional[str] = Field(None, description="Rol Ãºnico activo")
     roles: Optional[List[str]] = Field(None, description="Compatibilidad legacy")
 
     @field_validator("role")
@@ -59,7 +66,7 @@ class AssignRolesRequest(BaseModel):
             return value
         value = value.strip()
         if not value:
-            raise ValueError("El rol no puede ser vacío")
+            raise ValueError("El rol no puede ser vacÃ­o")
         return value
 
     def get_single_role(self) -> str:
@@ -82,13 +89,13 @@ class GrantTemporaryPermissionRequest(BaseModel):
     def validate_permission_name(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("El permiso no puede ser vacío")
+            raise ValueError("El permiso no puede ser vacÃ­o")
         return value
 
     @field_validator("expires_at")
     @classmethod
     def validate_expiration(cls, value: datetime) -> datetime:
-        now = datetime.now(timezone.utc)
+        now = now_colombia()
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         if value <= now:
@@ -97,7 +104,7 @@ class GrantTemporaryPermissionRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
-    """Campos permitidos para actualización de usuario."""
+    """Campos permitidos para actualizaciÃ³n de usuario."""
 
     full_name: Optional[str] = None
     cellphone: Optional[str] = None
@@ -135,18 +142,18 @@ def _write_audit(action: str, actor: dict, details: dict):
     except Exception as audit_error:
         logging.warning(f"No se pudo escribir audit log: {audit_error}")
 
-# Endpoints de autenticación
+# Endpoints de autenticaciÃ³n
 @router.post("/auth/validate-session")
 async def validate_session(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    ## 🔐 Validación de Sesión Activa para Next.js
+    ## ðŸ” ValidaciÃ³n de SesiÃ³n Activa para Next.js
     
-    Valida si un token de ID de Firebase es válido y obtiene información completa del usuario.
-    Optimizado para integración con Next.js y Firebase Auth SDK del frontend.
+    Valida si un token de ID de Firebase es vÃ¡lido y obtiene informaciÃ³n completa del usuario.
+    Optimizado para integraciÃ³n con Next.js y Firebase Auth SDK del frontend.
     
-    ### ✅ Casos de uso:
-    - Middleware de autenticación en Next.js
-    - Verificación de permisos antes de acciones sensibles
+    ### âœ… Casos de uso:
+    - Middleware de autenticaciÃ³n en Next.js
+    - VerificaciÃ³n de permisos antes de acciones sensibles
     - Obtener datos actualizados del usuario
     """
     try:
@@ -172,23 +179,23 @@ async def validate_session(credentials: HTTPAuthorizationCredentials = Depends(s
                 "permissions": permissions,
                 "is_active": user_data.get("is_active", True)
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception:
-        raise HTTPException(status_code=401, detail="Token inválido")
+        raise HTTPException(status_code=401, detail="Token invÃ¡lido")
 
 @router.post("/auth/login")
 @limiter.limit("5/minute")
 async def login_user(credentials: UserLoginRequest, request: Request):
     """
-    ## 🔐 Login de Usuario con ID Token
+    ## ðŸ” Login de Usuario con ID Token
     
-    Valida el ID token obtenido del frontend después de autenticación.
-    Retorna información del usuario si válido.
+    Valida el ID token obtenido del frontend despuÃ©s de autenticaciÃ³n.
+    Retorna informaciÃ³n del usuario si vÃ¡lido.
     
-    ### 📝 Proceso:
+    ### ðŸ“ Proceso:
     - Frontend autentica con Firebase SDK
-    - Frontend envía ID token al backend
+    - Frontend envÃ­a ID token al backend
     - Backend valida token y retorna datos del usuario
     """
     try:
@@ -197,8 +204,8 @@ async def login_user(credentials: UserLoginRequest, request: Request):
         uid = decoded_token['uid']
         user = auth_client.get_user(uid)
         
-        # Log de auditoría
-        logging.info(f"Usuario {user.email} inició sesión exitosamente")
+        # Log de auditorÃ­a
+        logging.info(f"Usuario {user.email} iniciÃ³ sesiÃ³n exitosamente")
         
         return {
             "success": True,
@@ -208,24 +215,24 @@ async def login_user(credentials: UserLoginRequest, request: Request):
                 "full_name": user.display_name,
                 "email_verified": user.email_verified
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         logging.warning(f"Intento de login fallido: {str(e)}")
-        raise HTTPException(status_code=401, detail="Token inválido")
+        raise HTTPException(status_code=401, detail="Token invÃ¡lido")
 
 @router.get("/auth/register/health-check")
 async def register_health_check():
     """
-    ## 🔍 Health Check para Registro de Usuario
+    ## ðŸ” Health Check para Registro de Usuario
     
-    Verifica que todos los servicios necesarios para el registro estén disponibles.
-    Útil para diagnosticar problemas en producción.
+    Verifica que todos los servicios necesarios para el registro estÃ©n disponibles.
+    Ãštil para diagnosticar problemas en producciÃ³n.
     """
     return {
         "firebase_auth": "available",
         "firestore": "available",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now_colombia().isoformat()
     }
 
 @router.post("/auth/register")
@@ -233,7 +240,7 @@ async def register_health_check():
 @limiter.limit(_REGISTER_RATE_LIMIT)
 async def register_user(user_data: UserRegistrationRequest, request: Request):
     """
-    ## ✅ Registro de Usuario Simplificado
+    ## âœ… Registro de Usuario Simplificado
     
     Registra un nuevo usuario en el sistema con Firebase Authentication.
     """
@@ -256,8 +263,8 @@ async def register_user(user_data: UserRegistrationRequest, request: Request):
             'temporary_permissions': [],
             'is_active': True,
             'email_verified': False,
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow(),
+            'created_at': now_colombia(),
+            'updated_at': now_colombia(),
             'uid': user.uid
         })
         
@@ -267,7 +274,7 @@ async def register_user(user_data: UserRegistrationRequest, request: Request):
             "message": "Usuario registrado exitosamente",
             "uid": user.uid,
             "role_assigned": DEFAULT_USER_ROLE,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -275,20 +282,20 @@ async def register_user(user_data: UserRegistrationRequest, request: Request):
 @router.post("/auth/change-password")
 async def change_password(
     uid: str = Form(..., description="ID del usuario"),
-    new_password: str = Form(..., description="Nueva contraseña"),
+    new_password: str = Form(..., description="Nueva contraseÃ±a"),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    ## 🔐 Cambiar Contraseña de Usuario
+    ## ðŸ” Cambiar ContraseÃ±a de Usuario
     
-    Permite cambiar la contraseña de un usuario existente.
+    Permite cambiar la contraseÃ±a de un usuario existente.
     """
     try:
         if current_user["uid"] != uid:
             require_permission(current_user, "manage:users")
 
         if len(new_password) < 8:
-            raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+            raise HTTPException(status_code=400, detail="La contraseÃ±a debe tener al menos 8 caracteres")
 
         auth_client.update_user(uid, password=new_password)
 
@@ -300,8 +307,8 @@ async def change_password(
 
         return {
             "success": True,
-            "message": "Contraseña actualizada exitosamente",
-            "timestamp": datetime.utcnow().isoformat()
+            "message": "ContraseÃ±a actualizada exitosamente",
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -314,28 +321,28 @@ async def get_workload_identity_status():
     return {
         "workload_identity": "configured",
         "status": "active",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now_colombia().isoformat()
     }
 
 @router.post("/auth/google")
 async def google_auth_unified(google_token: str = Form(..., description="ID Token de Google Sign-In")):
     """
-    ## 🔐 Autenticación con Google (Unificado)
+    ## ðŸ” AutenticaciÃ³n con Google (Unificado)
     
-    Endpoint unificado para autenticación con Google Sign-In.
+    Endpoint unificado para autenticaciÃ³n con Google Sign-In.
     Compatible con cualquier framework que haga HTTP requests.
     
-    ### 📱 **Compatible con:**
+    ### ðŸ“± **Compatible con:**
     - React, Vue, Angular, NextJS
-    - Aplicaciones móviles
+    - Aplicaciones mÃ³viles
     - Progressive Web Apps
     - Cualquier framework que haga HTTP requests
     
-    ### 🔒 **Seguridad:**
+    ### ðŸ”’ **Seguridad:**
     - Workload Identity Federation
-    - Sin credenciales en código
-    - Verificación automática con Google
-    - Auditoría completa de accesos
+    - Sin credenciales en cÃ³digo
+    - VerificaciÃ³n automÃ¡tica con Google
+    - AuditorÃ­a completa de accesos
     """
     try:
         decoded_token = auth_client.verify_id_token(google_token)
@@ -353,7 +360,7 @@ async def google_auth_unified(google_token: str = Form(..., description="ID Toke
                 "uid": user.uid,
                 "full_name": user.display_name
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
@@ -365,7 +372,7 @@ async def delete_user(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    ## 🗑️ Eliminar Usuario
+    ## ðŸ—‘ï¸ Eliminar Usuario
     
     Elimina un usuario del sistema.
     """
@@ -387,12 +394,12 @@ async def delete_user(
             "success": True,
             "message": f"Usuario {uid} eliminado",
             "permanent": permanent,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# Endpoints de administración
+# Endpoints de administraciÃ³n
 @router.get("/admin/users")
 async def list_system_users(
     limit: int = Query(50, ge=1, le=500),
@@ -400,9 +407,9 @@ async def list_system_users(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    ## 📋 Listado de Usuarios desde Firestore
+    ## ðŸ“‹ Listado de Usuarios desde Firestore
     
-    Lee directamente la colección "users" de Firestore y devuelve todos los usuarios registrados.
+    Lee directamente la colecciÃ³n "users" de Firestore y devuelve todos los usuarios registrados.
     """
     try:
         require_permission(current_user, "manage:users")
@@ -425,7 +432,7 @@ async def list_system_users(
             "total": total,
             "limit": limit,
             "offset": offset,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -482,7 +489,7 @@ async def list_super_admin_users(
 
 @router.get("/auth/admin/users/{uid}")
 async def get_user_details(uid: str, current_user: dict = Depends(get_current_user)):
-    """Obtener detalles de un usuario específico"""
+    """Obtener detalles de un usuario especÃ­fico"""
     try:
         require_permission(current_user, "manage:users")
 
@@ -507,7 +514,7 @@ async def update_user_info(
     payload: UpdateUserRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Actualizar información de usuario"""
+    """Actualizar informaciÃ³n de usuario"""
     try:
         require_permission(current_user, "manage:users")
 
@@ -525,7 +532,7 @@ async def update_user_info(
         if not update_fields:
             raise HTTPException(status_code=400, detail="No se enviaron campos para actualizar")
 
-        update_fields["updated_at"] = datetime.utcnow()
+        update_fields["updated_at"] = now_colombia()
         update_fields["updated_by"] = current_user.get("uid")
         user_ref.update(update_fields)
 
@@ -557,7 +564,7 @@ async def assign_roles_to_user(
 
         role = roles.get_single_role()
         if role not in ROLES:
-            raise HTTPException(status_code=400, detail=f"Rol inválido: {role}")
+            raise HTTPException(status_code=400, detail=f"Rol invÃ¡lido: {role}")
 
         user_ref = db.collection("users").document(uid)
         if not user_ref.get().exists:
@@ -566,7 +573,7 @@ async def assign_roles_to_user(
         user_ref.update(
             {
                 "roles": [role],
-                "updated_at": datetime.utcnow(),
+                "updated_at": now_colombia(),
                 "updated_by": current_user.get("uid"),
             }
         )
@@ -611,11 +618,11 @@ async def grant_temporary_permission(
                 "permission": permission.permission,
                 "expires_at": permission.expires_at,
                 "granted_by": current_user.get("uid"),
-                "granted_at": datetime.utcnow(),
+                "granted_at": now_colombia(),
             }
         )
 
-        user_ref.update({"temporary_permissions": temporary_permissions, "updated_at": datetime.utcnow()})
+        user_ref.update({"temporary_permissions": temporary_permissions, "updated_at": now_colombia()})
 
         _write_audit(
             action="grant_temporary_permission",
@@ -652,7 +659,7 @@ async def revoke_temporary_permission(
         temporary_permissions = user_data.get("temporary_permissions", [])
 
         filtered = [item for item in temporary_permissions if item.get("permission") != permission]
-        user_ref.update({"temporary_permissions": filtered, "updated_at": datetime.utcnow()})
+        user_ref.update({"temporary_permissions": filtered, "updated_at": now_colombia()})
 
         _write_audit(
             action="revoke_temporary_permission",
@@ -713,7 +720,7 @@ async def get_audit_logs(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Obtener logs de auditoría.
+    Obtener logs de auditorÃ­a.
     Accesible por admin_general y super_admin.
     
     Requiere permiso: view:audit_logs
@@ -753,7 +760,7 @@ async def get_audit_logs(
 @router.get("/auth/admin/system/stats")
 async def get_system_stats(current_user: dict = Depends(get_current_user)):
     """
-    Obtener estadísticas del sistema de autorización.
+    Obtener estadÃ­sticas del sistema de autorizaciÃ³n.
     Accesible por super_admin.
     
     Requiere permiso: manage:users
@@ -774,7 +781,7 @@ async def get_system_stats(current_user: dict = Depends(get_current_user)):
             "total_users": len(users),
             "total_roles": len(ROLES),
             "roles_distribution": roles_count,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_colombia().isoformat(),
         }
     except HTTPException:
         raise
@@ -784,8 +791,8 @@ async def get_system_stats(current_user: dict = Depends(get_current_user)):
 @router.get("/auth/config", dependencies=[Depends(security)])
 async def get_firebase_config(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    Obtener configuración de Firebase para el frontend (Protegido)
-    Requiere token de autenticación válido
+    Obtener configuraciÃ³n de Firebase para el frontend (Protegido)
+    Requiere token de autenticaciÃ³n vÃ¡lido
     """
     try:
         # Validar token antes de retornar config
@@ -800,4 +807,5 @@ async def get_firebase_config(credentials: HTTPAuthorizationCredentials = Depend
             "appId": os.getenv("FIREBASE_APP_ID", ""),
         }
     except Exception:
-        raise HTTPException(status_code=401, detail="Token inválido")
+        raise HTTPException(status_code=401, detail="Token invÃ¡lido")
+

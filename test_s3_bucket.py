@@ -21,7 +21,7 @@ print("VERIFICACION S3 — arn:aws:s3:::catatrack-photos")
 print("=" * 60)
 
 bucket  = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
-region  = os.getenv("AWS_REGION", "us-east-1")
+region  = os.getenv("AWS_REGION", "us-east-2")
 key_id  = os.getenv("AWS_ACCESS_KEY_ID", "")
 secret  = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 

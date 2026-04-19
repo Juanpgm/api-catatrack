@@ -1,19 +1,26 @@
-"""
-Rutas de Firebase - Status y gestión de colecciones
+﻿"""
+Rutas de Firebase - Status y gestiÃ³n de colecciones
 """
 from fastapi import APIRouter, HTTPException
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from app.firebase_config import db
 
 router = APIRouter(tags=["Firebase"])
 
+# Zona horaria Colombia (UTC-5)
+_COL_TZ = timezone(timedelta(hours=-5))
+
+def now_colombia() -> datetime:
+    """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
+    return datetime.now(_COL_TZ)
+
 @router.get("/firebase/status")
 async def firebase_status():
     """
-    Verificar estado de la conexión con Firebase
+    Verificar estado de la conexiÃ³n con Firebase
     """
     try:
-        # Verificar conexión intentando acceder a Firestore
+        # Verificar conexiÃ³n intentando acceder a Firestore
         collections = db.collections()
         collection_names = [col.id for col in collections]
         return {
@@ -22,7 +29,7 @@ async def firebase_status():
             "storage": "available",  # TODO: Verificar storage si es necesario
             "project_id": "dagma-85aad",
             "collections_count": len(collection_names),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Firebase no disponible: {str(e)}")
@@ -30,7 +37,7 @@ async def firebase_status():
 @router.get("/firebase/collections")
 async def get_firebase_collections():
     """
-    Obtener información completa de todas las colecciones de Firestore
+    Obtener informaciÃ³n completa de todas las colecciones de Firestore
     """
     try:
         collections = db.collections()
@@ -41,12 +48,12 @@ async def get_firebase_collections():
             collections_info.append({
                 "name": col.id,
                 "document_count": doc_count,
-                "size_bytes": 0  # TODO: Calcular tamaño si es necesario
+                "size_bytes": 0  # TODO: Calcular tamaÃ±o si es necesario
             })
         return {
             "success": True,
             "collections": collections_info,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo colecciones: {str(e)}")
@@ -54,7 +61,7 @@ async def get_firebase_collections():
 @router.get("/firebase/collections/summary")
 async def get_firebase_collections_summary():
     """
-    Obtener resumen estadístico de las colecciones
+    Obtener resumen estadÃ­stico de las colecciones
     """
     try:
         collections = db.collections()
@@ -68,8 +75,8 @@ async def get_firebase_collections_summary():
             "success": True,
             "total_collections": total_collections,
             "total_documents": total_documents,
-            "total_size_mb": 0.0,  # TODO: Calcular tamaño total
-            "timestamp": datetime.utcnow().isoformat()
+            "total_size_mb": 0.0,  # TODO: Calcular tamaÃ±o total
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo resumen: {str(e)}")
@@ -78,7 +85,7 @@ async def get_firebase_collections_summary():
 @router.get("/obtener_directorio_contactos")
 async def obtener_directorio_contactos():
     """
-    🔵 GET | Obtener todos los contactos del directorio desde la colección 'directorio_contactos'
+    ðŸ”µ GET | Obtener todos los contactos del directorio desde la colecciÃ³n 'directorio_contactos'
     """
     try:
         docs = db.collection("directorio_contactos").stream()
@@ -91,7 +98,8 @@ async def obtener_directorio_contactos():
             "success": True,
             "total": len(contactos),
             "contactos": contactos,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo directorio de contactos: {str(e)}")
+

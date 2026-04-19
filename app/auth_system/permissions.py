@@ -1,9 +1,16 @@
 """Utilidades para resolver y validar permisos de usuarios."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Iterable, List
 
 from .constants import ROLES
+
+# Zona horaria Colombia (UTC-5)
+_COL_TZ = timezone(timedelta(hours=-5))
+
+def now_colombia() -> datetime:
+    """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
+    return datetime.now(_COL_TZ)
 
 
 def _normalize_list(raw_value) -> List[str]:
@@ -50,7 +57,7 @@ def get_user_permissions(user_data: dict) -> List[str]:
             permissions.update(role_cfg.get("permissions", []))
 
     temporary_permissions = user_data.get("temporary_permissions", [])
-    now = datetime.now(timezone.utc)
+    now = now_colombia()
 
     for temp_perm in temporary_permissions:
         permission = str(temp_perm.get("permission", "")).strip()

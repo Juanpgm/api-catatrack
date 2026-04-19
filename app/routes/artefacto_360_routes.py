@@ -1,9 +1,9 @@
-"""
-Rutas para gestión de Artefacto de Captura DAGMA
+﻿"""
+Rutas para gestiÃ³n de Artefacto de Captura DAGMA
 """
 from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Body
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import json
 import re
 import unicodedata
@@ -17,13 +17,20 @@ import httpx
 from shapely.geometry import shape, Point
 from shapely.ops import nearest_points
 
-# Importar configuración de Firebase y S3/Storage
+# Importar configuraciÃ³n de Firebase y S3/Storage
 from app.firebase_config import db
 import boto3
 from botocore.exceptions import ClientError
 from botocore.config import Config as BotoConfig
 
 router = APIRouter(tags=["Artefacto de Captura"])
+
+# Zona horaria Colombia (UTC-5)
+_COL_TZ = timezone(timedelta(hours=-5))
+
+def now_colombia() -> datetime:
+    """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
+    return datetime.now(_COL_TZ)
 
 
 # ==================== FUNCIONES AUXILIARES ====================#
@@ -45,7 +52,7 @@ def clean_nan_values(obj):
 
 def validate_coordinates(coordinates: list, geometry_type: str) -> bool:
     """
-    Valida coordenadas según el tipo de geometría
+    Valida coordenadas segÃºn el tipo de geometrÃ­a
     """
     if not isinstance(coordinates, list):
         raise ValueError("Las coordenadas deben ser un array")
@@ -55,11 +62,11 @@ def validate_coordinates(coordinates: list, geometry_type: str) -> bool:
             raise ValueError("Point debe tener exactamente 2 coordenadas [lon, lat]")
         lon, lat = coordinates
         if not isinstance(lon, (int, float)) or not isinstance(lat, (int, float)):
-            raise ValueError("Las coordenadas deben ser números")
+            raise ValueError("Las coordenadas deben ser nÃºmeros")
         if not (-180 <= lon <= 180):
-            raise ValueError(f"Longitud inválida: {lon}. Debe estar entre -180 y 180")
+            raise ValueError(f"Longitud invÃ¡lida: {lon}. Debe estar entre -180 y 180")
         if not (-90 <= lat <= 90):
-            raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
+            raise ValueError(f"Latitud invÃ¡lida: {lat}. Debe estar entre -90 y 90")
     
     elif geometry_type in ["LineString", "MultiPoint"]:
         if len(coordinates) < 2:
@@ -76,25 +83,25 @@ def validate_coordinates(coordinates: list, geometry_type: str) -> bool:
             raise ValueError("Polygon debe tener al menos un anillo")
         for ring in coordinates:
             if not isinstance(ring, list) or len(ring) < 4:
-                raise ValueError("Cada anillo del polígono debe tener al menos 4 puntos")
+                raise ValueError("Cada anillo del polÃ­gono debe tener al menos 4 puntos")
     
     return True
 
 
 def validate_photo_file(file: UploadFile) -> bool:
     """
-    Valida que el archivo sea una imagen válida
+    Valida que el archivo sea una imagen vÃ¡lida
     """
     # Validar tipo MIME
     allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic"]
     if file.content_type not in allowed_types:
         raise ValueError(f"Tipo de archivo no permitido: {file.content_type}. Permitidos: {', '.join(allowed_types)}")
     
-    # Validar extensión
+    # Validar extensiÃ³n
     allowed_extensions = [".jpg", ".jpeg", ".png", ".webp", ".heic"]
     file_ext = os.path.splitext(file.filename)[1].lower()
     if file_ext not in allowed_extensions:
-        raise ValueError(f"Extensión no permitida: {file_ext}")
+        raise ValueError(f"ExtensiÃ³n no permitida: {file_ext}")
     
     return True
 
@@ -125,7 +132,7 @@ def get_s3_client():
 def _listar_documentos_s3(vid: str, rid: str, s3_client=None, expiration: int = 3600) -> list:
     """
     Lista todos los objetos en S3 bajo requerimientos/{vid}/{rid}/ y genera
-    URLs presignadas (descarga y visualización) para cada uno.
+    URLs presignadas (descarga y visualizaciÃ³n) para cada uno.
     """
     bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
     prefix = f"requerimientos/{vid}/{rid}/"
@@ -189,8 +196,8 @@ def _listar_documentos_s3(vid: str, rid: str, s3_client=None, expiration: int = 
     return documentos
 
 
-# ==================== GEOLOCALIZACIÓN ====================
-# Cargar basemaps en memoria al iniciar el módulo
+# ==================== GEOLOCALIZACIÃ“N ====================
+# Cargar basemaps en memoria al iniciar el mÃ³dulo
 def _load_basemap(filepath: str, property_name: str) -> list:
     """Carga un GeoJSON y retorna lista de tuplas (polygon_shape, property_value)"""
     basemap_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), filepath)
@@ -205,23 +212,23 @@ def _load_basemap(filepath: str, property_name: str) -> list:
                 polygons.append((geom, value))
             except Exception:
                 continue
-        print(f"✅ Basemap '{filepath}' cargado: {len(polygons)} polígonos")
+        print(f"âœ… Basemap '{filepath}' cargado: {len(polygons)} polÃ­gonos")
         return polygons
     except Exception as e:
-        print(f"⚠️ Error cargando basemap '{filepath}': {str(e)}")
+        print(f"âš ï¸ Error cargando basemap '{filepath}': {str(e)}")
         return []
 
 _BARRIOS_POLYGONS = _load_basemap('basemaps/barrios_veredas.geojson', 'barrio_vereda')
 _COMUNAS_POLYGONS = _load_basemap('basemaps/comunas_corregimientos.geojson', 'comuna_corregimiento')
 
-# Índice nombre (mayúsculas) → (polígono, nombre_canónico) para búsqueda rápida
+# Ãndice nombre (mayÃºsculas) â†’ (polÃ­gono, nombre_canÃ³nico) para bÃºsqueda rÃ¡pida
 _BARRIOS_INDEX: dict = {}
 _COMUNAS_INDEX: dict = {}
 
 
 def geolocate_point(lon: float, lat: float) -> dict:
     """
-    Realiza intersección geográfica de un punto con los polígonos de barrios/veredas
+    Realiza intersecciÃ³n geogrÃ¡fica de un punto con los polÃ­gonos de barrios/veredas
     y comunas/corregimientos.
     Retorna dict con 'barrio_vereda' y 'comuna_corregimiento' (None si no intersecta).
     """
@@ -241,7 +248,7 @@ def geolocate_point(lon: float, lat: float) -> dict:
     return result
 
 
-# Cache en memoria para evitar geocodificar la misma dirección múltiples veces
+# Cache en memoria para evitar geocodificar la misma direcciÃ³n mÃºltiples veces
 _GEOCODE_CACHE: dict = {}
 
 # Bounding box del municipio de Cali (incluye corregimientos rurales)
@@ -251,13 +258,13 @@ _CALI_VIEWBOX = f"{_CALI_BBOX['lon_min']},{_CALI_BBOX['lat_max']},{_CALI_BBOX['l
 
 
 def _dentro_de_cali(lon: float, lat: float) -> bool:
-    """Verifica que las coordenadas estén dentro del área de Cali"""
+    """Verifica que las coordenadas estÃ©n dentro del Ã¡rea de Cali"""
     b = _CALI_BBOX
     return b["lon_min"] <= lon <= b["lon_max"] and b["lat_min"] <= lat <= b["lat_max"]
 
 
 def _strip_acentos(s: str) -> str:
-    """Elimina diacríticos para comparación insensible a tildes/acentos (Siloé ↔ SILOE)."""
+    """Elimina diacrÃ­ticos para comparaciÃ³n insensible a tildes/acentos (SiloÃ© â†” SILOE)."""
     return ''.join(
         c for c in unicodedata.normalize('NFD', s)
         if unicodedata.category(c) != 'Mn'
@@ -266,16 +273,16 @@ def _strip_acentos(s: str) -> str:
 
 def _limpiar_complementos(texto: str) -> str:
     """
-    Elimina de una dirección los complementos que confunden a los geocodificadores:
+    Elimina de una direcciÃ³n los complementos que confunden a los geocodificadores:
     - Indicaciones relativas: 'junto a', 'frente a', 'contiguo a', 'cerca de', etc.
     - Datos de unidad: apto, piso, torre, casa, local, oficina, int.
-    - Descriptores vacíos: 'conjunto', 'urb.', 'manzana X'.
+    - Descriptores vacÃ­os: 'conjunto', 'urb.', 'manzana X'.
     Conserva el nombre del barrio/sector para que Nominatim lo use como contexto.
     """
     # Indicaciones de referencia (hasta la siguiente coma o fin de texto)
     texto = re.sub(
         r'\b(junto\s+a|frente\s+al?|contiguo\s+a|al\s+lado\s+de'
-        r'|cerca\s+de|detr[aá]s\s+de|al\s+frente\s+de|esquina\s+con)[^,;]*',
+        r'|cerca\s+de|detr[aÃ¡]s\s+de|al\s+frente\s+de|esquina\s+con)[^,;]*',
         '', texto, flags=re.IGNORECASE
     )
     # Datos de unidad: eliminar token + valor
@@ -291,18 +298,18 @@ def _limpiar_complementos(texto: str) -> str:
 
 def _normalizar_direccion_colombiana(direccion: str) -> list:
     """
-    Genera variantes normalizadas de una dirección colombiana para maximizar
-    las posibilidades de geocodificación exitosa.
+    Genera variantes normalizadas de una direcciÃ³n colombiana para maximizar
+    las posibilidades de geocodificaciÃ³n exitosa.
 
-    Mejoras respecto a la versión anterior:
+    Mejoras respecto a la versiÃ³n anterior:
     - Elimina complementos ruidosos (apto, junto a, frente a) antes de geocodificar.
-    - Maneja abreviaciones (Cl, Cra, Av, Dg, Tv), notación # vs No. y cuadrantes.
-    - Genera variante para intersecciones "con" → "&" (mejor soporte OSM/Nominatim).
-    - Genera variante con solo la vía principal como fallback genérico.
+    - Maneja abreviaciones (Cl, Cra, Av, Dg, Tv), notaciÃ³n # vs No. y cuadrantes.
+    - Genera variante para intersecciones "con" â†’ "&" (mejor soporte OSM/Nominatim).
+    - Genera variante con solo la vÃ­a principal como fallback genÃ©rico.
     """
     sufijo = ", Cali, Valle del Cauca, Colombia"
     clean_orig = direccion.strip()
-    # Versión limpia: sin complementos ruidosos (prioridad para Nominatim)
+    # VersiÃ³n limpia: sin complementos ruidosos (prioridad para Nominatim)
     clean = _limpiar_complementos(clean_orig)
 
     abreviaciones = [
@@ -333,28 +340,28 @@ def _normalizar_direccion_colombiana(direccion: str) -> list:
 
     variantes = []
 
-    # v1: versión limpia con abreviaciones expandidas (óptima para Nominatim)
+    # v1: versiÃ³n limpia con abreviaciones expandidas (Ã³ptima para Nominatim)
     variantes.append(f"{expanded}{sufijo}")
 
-    # v2: # → No. en versión limpia
+    # v2: # â†’ No. en versiÃ³n limpia
     no_fmt = re.sub(r'\s*#\s*', ' No. ', expanded)
     if no_fmt != expanded:
         variantes.append(f"{no_fmt}{sufijo}")
 
-    # v3: intersección "con" → "&" (mejor soporte OSM para cruces de calles)
+    # v3: intersecciÃ³n "con" â†’ "&" (mejor soporte OSM para cruces de calles)
     if re.search(r'\bcon\b', expanded, re.IGNORECASE):
         con_fmt = re.sub(r'\s+con\s+', ' & ', expanded, flags=re.IGNORECASE)
         variantes.append(f"{con_fmt}{sufijo}")
 
-    # v4: versión original expandida (con complementos; por si el nombre de referencia ayuda)
+    # v4: versiÃ³n original expandida (con complementos; por si el nombre de referencia ayuda)
     if expanded_orig.lower() != expanded.lower():
         variantes.append(f"{expanded_orig}{sufijo}")
 
-    # v5: original sin expandir como último recurso
+    # v5: original sin expandir como Ãºltimo recurso
     if clean_orig.lower() not in {expanded.lower(), expanded_orig.lower()}:
         variantes.append(f"{clean_orig}{sufijo}")
 
-    # v6: solo la vía principal antes del # o primera coma (fallback muy genérico)
+    # v6: solo la vÃ­a principal antes del # o primera coma (fallback muy genÃ©rico)
     main = re.split(r'\s*[#,]\s*', expanded)[0].strip()
     if len(main) > 5 and main.lower() != expanded.lower():
         variantes.append(f"{main}{sufijo}")
@@ -370,19 +377,19 @@ def _normalizar_direccion_colombiana(direccion: str) -> list:
 
 def _extraer_barrios_mencionados(direccion: str) -> list:
     """
-    Detecta barrios/veredas mencionados en la dirección usando cuatro estrategias:
+    Detecta barrios/veredas mencionados en la direcciÃ³n usando cuatro estrategias:
 
     1. Coincidencia directa insensible a acentos: 'Centenario', 'La Flora'.
-    2. Prefijo de 2 palabras del basemap: 'San Fernando' → 'San Fernando Viejo'.
-    3. Extracción por palabra clave ('barrio X', 'sector X', 'vereda X'):
-       el texto extraído se empareja exactamente, por prefijo y por palabras clave.
-    4. Palabras significativas (≥5 chars, no artículos): 'El Obrero' → 'Barrio Obrero'.
+    2. Prefijo de 2 palabras del basemap: 'San Fernando' â†’ 'San Fernando Viejo'.
+    3. ExtracciÃ³n por palabra clave ('barrio X', 'sector X', 'vereda X'):
+       el texto extraÃ­do se empareja exactamente, por prefijo y por palabras clave.
+    4. Palabras significativas (â‰¥5 chars, no artÃ­culos): 'El Obrero' â†’ 'Barrio Obrero'.
 
-    Retorna lista de (nombre_canónico, polígono) ordenada por longitud descendente.
+    Retorna lista de (nombre_canÃ³nico, polÃ­gono) ordenada por longitud descendente.
     """
     global _BARRIOS_INDEX
     if not _BARRIOS_INDEX:
-        # Números escritos como palabra → dígito, para que "7 de Agosto" encuentre "Siete de Agosto"
+        # NÃºmeros escritos como palabra â†’ dÃ­gito, para que "7 de Agosto" encuentre "Siete de Agosto"
         _NUM_TO_DIGIT = {
             'PRIMERO': '1', 'UNO': '1', 'DOS': '2', 'TRES': '3', 'CUATRO': '4',
             'CINCO': '5', 'SEIS': '6', 'SIETE': '7', 'OCHO': '8', 'NUEVE': '9',
@@ -393,23 +400,23 @@ def _extraer_barrios_mencionados(direccion: str) -> list:
                 continue
             key = _strip_acentos(name)
             _BARRIOS_INDEX[key] = (poly, name)
-            # Variante dígito para nombres que comienzan con número escrito
-            # ("SIETE DE AGOSTO" → "7 DE AGOSTO")
+            # Variante dÃ­gito para nombres que comienzan con nÃºmero escrito
+            # ("SIETE DE AGOSTO" â†’ "7 DE AGOSTO")
             first = key.split()[0]
             if first in _NUM_TO_DIGIT:
                 alt = _NUM_TO_DIGIT[first] + key[len(first):]
                 _BARRIOS_INDEX.setdefault(alt, (poly, name))
 
     texto_norm = _strip_acentos(direccion)
-    encontrados: dict = {}  # canonical_name → polygon (deduplicado)
+    encontrados: dict = {}  # canonical_name â†’ polygon (deduplicado)
 
-    # ── Estrategia 1: coincidencia directa insensible a acentos ──
+    # â”€â”€ Estrategia 1: coincidencia directa insensible a acentos â”€â”€
     for nombre_norm, (polygon, nombre_canonical) in _BARRIOS_INDEX.items():
         if nombre_norm in texto_norm:
             encontrados[nombre_canonical] = polygon
 
-    # ── Estrategia 1b: prefijo de 2 palabras del nombre del basemap ──
-    # Captura "San Fernando" → "San Fernando Viejo" / "San Fernando Nuevo"
+    # â”€â”€ Estrategia 1b: prefijo de 2 palabras del nombre del basemap â”€â”€
+    # Captura "San Fernando" â†’ "San Fernando Viejo" / "San Fernando Nuevo"
     for nombre_norm, (polygon, nombre_canonical) in _BARRIOS_INDEX.items():
         if nombre_canonical in encontrados:
             continue
@@ -419,7 +426,7 @@ def _extraer_barrios_mencionados(direccion: str) -> list:
             if len(prefijo) >= 10 and prefijo in texto_norm:
                 encontrados[nombre_canonical] = polygon
 
-    # ── Estrategia 2: extracción por palabra clave "barrio X", "sector X", "urb X", etc. ──
+    # â”€â”€ Estrategia 2: extracciÃ³n por palabra clave "barrio X", "sector X", "urb X", etc. â”€â”€
     _STOP_WORDS_GEO = {
         'EL', 'LA', 'LOS', 'LAS', 'SAN', 'SANTA', 'DE', 'DEL', 'UN', 'UNA',
         'BARRIO', 'SECTOR', 'VEREDA', 'CON', 'CALLE', 'CARRERA', 'AVENIDA',
@@ -427,8 +434,8 @@ def _extraer_barrios_mencionados(direccion: str) -> list:
         'URBANIZACION', 'CIUDADELA', 'CONJUNTO', 'RESIDENCIAL', 'UNIDAD',
     }
     kw_pattern = re.compile(
-        r'\b(?:barrio|bario|sector|vereda|b[oOº°]'
-        r'|urb\.?|urbanizaci[oó]n|ciudadela'
+        r'\b(?:barrio|bario|sector|vereda|b[oOÂºÂ°]'
+        r'|urb\.?|urbanizaci[oÃ³]n|ciudadela'
         r'|conj\.?|cjto\.?|conjunto|res\.?|residencial)\s+'
         r'([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f0-9\s]{2,30}?)'
         r'(?=\s*[,;#\n]|\s*$)',
@@ -454,7 +461,7 @@ def _extraer_barrios_mencionados(direccion: str) -> list:
                 matched = True
                 break
 
-        # 2c. Palabras significativas en común (fallback para "El Obrero" → "Barrio Obrero")
+        # 2c. Palabras significativas en comÃºn (fallback para "El Obrero" â†’ "Barrio Obrero")
         if not matched:
             palabras_cand = {
                 w for w in candidato_norm.split()
@@ -477,13 +484,13 @@ def _extraer_barrios_mencionados(direccion: str) -> list:
 
 def _extraer_comunas_mencionadas(direccion: str) -> list:
     """
-    Detecta comunas o corregimientos mencionados en la dirección usando tres estrategias:
+    Detecta comunas o corregimientos mencionados en la direcciÃ³n usando tres estrategias:
 
-    A. Número de comuna: 'comuna 10', 'c. 10', 'com 10', 'c.10', 'COMUNA 01'…
+    A. NÃºmero de comuna: 'comuna 10', 'c. 10', 'com 10', 'c.10', 'COMUNA 01'â€¦
     B. Nombre de corregimiento directo insensible a acentos: 'Pance', 'Felidia', 'La Buitrera'.
-    C. Keyword 'corregimiento X' / 'cgto X' con búsqueda exacta y por prefijo.
+    C. Keyword 'corregimiento X' / 'cgto X' con bÃºsqueda exacta y por prefijo.
 
-    Retorna lista de (nombre_canónico, polígono).
+    Retorna lista de (nombre_canÃ³nico, polÃ­gono).
     """
     global _COMUNAS_INDEX
     if not _COMUNAS_INDEX:
@@ -496,7 +503,7 @@ def _extraer_comunas_mencionadas(direccion: str) -> list:
     texto_norm = _strip_acentos(direccion)
     encontrados: dict = {}
 
-    # A: número de comuna — soporta "comuna 10", "c.10", "com 10", "c. 10"
+    # A: nÃºmero de comuna â€” soporta "comuna 10", "c.10", "com 10", "c. 10"
     num_pattern = re.compile(
         r'\b(?:comunas?|com\.?|c\.)\s*0?(\d{1,2})\b',
         re.IGNORECASE
@@ -539,16 +546,16 @@ def _extraer_comunas_mencionadas(direccion: str) -> list:
 
 def _snap_al_interior(lon: float, lat: float, polygon) -> tuple:
     """
-    Si el punto está fuera del polígono, devuelve el representative_point()
-    de shapely, que está garantizado estrictamente dentro del polígono
-    (funciona correctamente incluso con polígonos no convexos).
+    Si el punto estÃ¡ fuera del polÃ­gono, devuelve el representative_point()
+    de shapely, que estÃ¡ garantizado estrictamente dentro del polÃ­gono
+    (funciona correctamente incluso con polÃ­gonos no convexos).
     Retorna (lon, lat, fue_corregido).
     """
     point = Point(lon, lat)
     if polygon.contains(point):
         return lon, lat, False
-    # representative_point() siempre está dentro, a diferencia de nearest_points
-    # que proyecta al borde y puede generar ambigüedad con polígonos vecinos.
+    # representative_point() siempre estÃ¡ dentro, a diferencia de nearest_points
+    # que proyecta al borde y puede generar ambigÃ¼edad con polÃ­gonos vecinos.
     rep = polygon.representative_point()
     return rep.x, rep.y, True
 
@@ -557,8 +564,8 @@ def _seleccionar_candidato(candidatos: list, barrio_polygon, barrio_name: str) -
     """
     De una lista de candidatos geocodificados, elige el que mejor corresponde
     al barrio indicado:
-      1. Si alguno cae dentro del polígono del barrio → devuelve ese directamente.
-      2. Si ninguno → toma el más cercano al centroide y lo proyecta dentro del polígono.
+      1. Si alguno cae dentro del polÃ­gono del barrio â†’ devuelve ese directamente.
+      2. Si ninguno â†’ toma el mÃ¡s cercano al centroide y lo proyecta dentro del polÃ­gono.
     """
     if not candidatos:
         return None
@@ -571,7 +578,7 @@ def _seleccionar_candidato(candidatos: list, barrio_polygon, barrio_name: str) -
     if dentro:
         return {**dentro[0], "barrio_snap": False}
 
-    # Paso 2: ninguno cae dentro → el más cercano al centroide
+    # Paso 2: ninguno cae dentro â†’ el mÃ¡s cercano al centroide
     centroide = barrio_polygon.centroid
 
     def dist_sq(c):
@@ -593,7 +600,7 @@ def _seleccionar_candidato(candidatos: list, barrio_polygon, barrio_name: str) -
 async def _geocode_nominatim_multi(
     query: str, client: httpx.AsyncClient, limit: int = 5
 ) -> list:
-    """Nominatim con múltiples candidatos acotados al bbox de Cali."""
+    """Nominatim con mÃºltiples candidatos acotados al bbox de Cali."""
     try:
         r = await client.get(
             "https://nominatim.openstreetmap.org/search",
@@ -618,13 +625,13 @@ async def _geocode_nominatim_multi(
 
 
 async def _geocode_nominatim(query: str, client: httpx.AsyncClient) -> Optional[dict]:
-    """Nominatim (OpenStreetMap) — gratuito, sin API key, 1 req/s"""
+    """Nominatim (OpenStreetMap) â€” gratuito, sin API key, 1 req/s"""
     results = await _geocode_nominatim_multi(query, client, limit=1)
     return results[0] if results else None
 
 
 async def _geocode_photon(query: str, client: httpx.AsyncClient) -> Optional[dict]:
-    """Photon (Komoot) — gratuito, basado en OSM, sin API key, mejor cobertura LATAM"""
+    """Photon (Komoot) â€” gratuito, basado en OSM, sin API key, mejor cobertura LATAM"""
     try:
         r = await client.get(
             "https://photon.komoot.io/api/",
@@ -642,7 +649,7 @@ async def _geocode_photon(query: str, client: httpx.AsyncClient) -> Optional[dic
 
 
 async def _geocode_arcgis(query: str, client: httpx.AsyncClient) -> Optional[dict]:
-    """ArcGIS World Geocoding Service — acceso anónimo gratuito (1M req/mes)"""
+    """ArcGIS World Geocoding Service â€” acceso anÃ³nimo gratuito (1M req/mes)"""
     try:
         r = await client.get(
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
@@ -668,15 +675,15 @@ async def _geocode_arcgis(query: str, client: httpx.AsyncClient) -> Optional[dic
 
 async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
     """
-    Geocodifica una dirección en Cali con cadena de proveedores, barrio/comuna-hint y fallback.
+    Geocodifica una direcciÃ³n en Cali con cadena de proveedores, barrio/comuna-hint y fallback.
 
     Estrategia:
-      1. Caché en memoria: evita llamadas redundantes.
+      1. CachÃ© en memoria: evita llamadas redundantes.
       2a. Extrae barrios/veredas mencionados (insensible a acentos, 4 estrategias).
-      2b. Extrae comunas/corregimientos mencionados (número o nombre).
+      2b. Extrae comunas/corregimientos mencionados (nÃºmero o nombre).
       3. Nominatim multi-candidato acotado al bbox de Cali:
-         - Si hay barrio_hint → elige/proyecta el candidato dentro del polígono del barrio.
-         - Si solo hay comuna_hint → elige/proyecta dentro del polígono de la comuna.
+         - Si hay barrio_hint â†’ elige/proyecta el candidato dentro del polÃ­gono del barrio.
+         - Si solo hay comuna_hint â†’ elige/proyecta dentro del polÃ­gono de la comuna.
       4. Nominatim simple (sin hint o sin resultados con hint).
       5. Photon (Komoot) como fallback OSM alternativo.
       6. ArcGIS World Geocoding.
@@ -689,23 +696,23 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
     clave = direccion.strip().lower()
     if clave in _GEOCODE_CACHE:
         cached = _GEOCODE_CACHE[clave]
-        print(f"💾 Geocodificación (caché): '{direccion}' → [{cached['lon']}, {cached['lat']}]")
+        print(f"ðŸ’¾ GeocodificaciÃ³n (cachÃ©): '{direccion}' â†’ [{cached['lon']}, {cached['lat']}]")
         return cached
 
     variantes = _normalizar_direccion_colombiana(direccion)
     barrios_hint = _extraer_barrios_mencionados(direccion)
     comunas_hint = _extraer_comunas_mencionadas(direccion)
 
-    hint_b = barrios_hint[0][0] if barrios_hint else "—"
-    hint_c = comunas_hint[0][0] if comunas_hint else "—"
+    hint_b = barrios_hint[0][0] if barrios_hint else "â€”"
+    hint_c = comunas_hint[0][0] if comunas_hint else "â€”"
     print(
-        f"🔍 Geocodificando '{direccion}' | variantes={len(variantes)}"
+        f"ðŸ” Geocodificando '{direccion}' | variantes={len(variantes)}"
         f" | barrio='{hint_b}' | comuna='{hint_c}'"
     )
 
     async with httpx.AsyncClient(timeout=12.0) as client:
 
-        # ── Paso 1: Nominatim multi-candidato restringido al polígono del barrio ──
+        # â”€â”€ Paso 1: Nominatim multi-candidato restringido al polÃ­gono del barrio â”€â”€
         if barrios_hint:
             barrio_name_hint, barrio_polygon_hint = barrios_hint[0]
             variantes_hint = variantes + [f"{barrio_name_hint}, Cali, Valle del Cauca, Colombia"]
@@ -719,13 +726,13 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                             if mejor.get("barrio_snap") else ""
                         )
                         print(
-                            f"✅ [{mejor['proveedor']}+barrio:'{barrio_name_hint}'] →"
+                            f"âœ… [{mejor['proveedor']}+barrio:'{barrio_name_hint}'] â†’"
                             f" [{mejor['lon']:.6f}, {mejor['lat']:.6f}]{snap_msg}"
                         )
                         _GEOCODE_CACHE[clave] = mejor
                         return mejor
 
-        # ── Paso 2: Nominatim multi-candidato restringido al polígono de la comuna ──
+        # â”€â”€ Paso 2: Nominatim multi-candidato restringido al polÃ­gono de la comuna â”€â”€
         if comunas_hint and not barrios_hint:
             comuna_name_hint, comuna_polygon_hint = comunas_hint[0]
             variantes_hint = variantes + [f"{comuna_name_hint}, Cali, Valle del Cauca, Colombia"]
@@ -739,37 +746,37 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                             if mejor.get("barrio_snap") else ""
                         )
                         print(
-                            f"✅ [{mejor['proveedor']}+comuna:'{comuna_name_hint}'] →"
+                            f"âœ… [{mejor['proveedor']}+comuna:'{comuna_name_hint}'] â†’"
                             f" [{mejor['lon']:.6f}, {mejor['lat']:.6f}]{snap_msg}"
                         )
                         _GEOCODE_CACHE[clave] = mejor
                         return mejor
 
-        # ── Paso 3: Nominatim simple (sin hint o sin resultados con hint) ──
+        # â”€â”€ Paso 3: Nominatim simple (sin hint o sin resultados con hint) â”€â”€
         for query in variantes:
             result = await _geocode_nominatim(query, client)
             if result:
-                print(f"✅ [nominatim] '{query}' → [{result['lon']}, {result['lat']}]")
+                print(f"âœ… [nominatim] '{query}' â†’ [{result['lon']}, {result['lat']}]")
                 _GEOCODE_CACHE[clave] = result
                 return result
 
-        # ── Paso 4: Photon ──
+        # â”€â”€ Paso 4: Photon â”€â”€
         for query in variantes[:2]:
             result = await _geocode_photon(query, client)
             if result:
-                print(f"✅ [photon] '{query}' → [{result['lon']}, {result['lat']}]")
+                print(f"âœ… [photon] '{query}' â†’ [{result['lon']}, {result['lat']}]")
                 _GEOCODE_CACHE[clave] = result
                 return result
 
-        # ── Paso 5: ArcGIS ──
+        # â”€â”€ Paso 5: ArcGIS â”€â”€
         for query in variantes[:2]:
             result = await _geocode_arcgis(query, client)
             if result:
-                print(f"✅ [arcgis] '{query}' → [{result['lon']}, {result['lat']}]")
+                print(f"âœ… [arcgis] '{query}' â†’ [{result['lon']}, {result['lat']}]")
                 _GEOCODE_CACHE[clave] = result
                 return result
 
-        # ── Paso 6: Fallback al centroide del barrio mencionado ──
+        # â”€â”€ Paso 6: Fallback al centroide del barrio mencionado â”€â”€
         if barrios_hint:
             barrio_name_hint, barrio_polygon_hint = barrios_hint[0]
             centroide = barrio_polygon_hint.centroid
@@ -778,11 +785,11 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                 "proveedor": "barrio_centroide",
                 "barrio_snap": True, "barrio_snap_desde": "centroide_fallback",
             }
-            print(f"📍 Fallback centroide barrio '{barrio_name_hint}': [{centroide.x:.6f}, {centroide.y:.6f}]")
+            print(f"ðŸ“ Fallback centroide barrio '{barrio_name_hint}': [{centroide.x:.6f}, {centroide.y:.6f}]")
             _GEOCODE_CACHE[clave] = result
             return result
 
-        # ── Paso 7: Fallback al centroide de la comuna mencionada ──
+        # â”€â”€ Paso 7: Fallback al centroide de la comuna mencionada â”€â”€
         if comunas_hint:
             comuna_name_hint, comuna_polygon_hint = comunas_hint[0]
             centroide = comuna_polygon_hint.centroid
@@ -791,17 +798,17 @@ async def geocodificar_direccion_cali(direccion: str) -> Optional[dict]:
                 "proveedor": "comuna_centroide",
                 "barrio_snap": True, "barrio_snap_desde": "centroide_fallback",
             }
-            print(f"📍 Fallback centroide comuna '{comuna_name_hint}': [{centroide.x:.6f}, {centroide.y:.6f}]")
+            print(f"ðŸ“ Fallback centroide comuna '{comuna_name_hint}': [{centroide.x:.6f}, {centroide.y:.6f}]")
             _GEOCODE_CACHE[clave] = result
             return result
 
-    print(f"⚠️ Sin resultados en ningún proveedor para: '{direccion}'")
+    print(f"âš ï¸ Sin resultados en ningÃºn proveedor para: '{direccion}'")
     return None
 
 
 # ==================== MODELOS ====================#
 class AcompananteModel(BaseModel):
-    """Modelo para datos de acompañante"""
+    """Modelo para datos de acompaÃ±ante"""
     nombre_completo: str
     telefono: str
     email: str
@@ -810,12 +817,12 @@ class AcompananteModel(BaseModel):
 
 class RegistroVisitaRequest(BaseModel):
     """Modelo de solicitud para registro de visitas"""
-    direccion_visita: str = Field(..., min_length=1, description="Dirección de la visita en Cali, Valle del Cauca")
-    descripcion_visita: str = Field(..., min_length=1, description="Descripción de la visita")
+    direccion_visita: str = Field(..., min_length=1, description="DirecciÃ³n de la visita en Cali, Valle del Cauca")
+    descripcion_visita: str = Field(..., min_length=1, description="DescripciÃ³n de la visita")
     observaciones_visita: str = Field(..., min_length=1, description="Observaciones de la visita")
-    acompanantes: Optional[List[AcompananteModel]] = Field(None, description="Lista de acompañantes (opcional)")
+    acompanantes: Optional[List[AcompananteModel]] = Field(None, description="Lista de acompaÃ±antes (opcional)")
     fecha_visita: str = Field(..., description="Fecha de la visita en formato dd/mm/aaaa")
-    hora_visita: str = Field(..., description="Hora de la visita en formato HH:mm (hora Bogotá)")
+    hora_visita: str = Field(..., description="Hora de la visita en formato HH:mm (hora BogotÃ¡)")
 
 
 class RegistroVisitaResponse(BaseModel):
@@ -894,22 +901,22 @@ class RegistroRequerimientoResponse(BaseModel):
     timestamp: str
 
 
-# ==================== ENDPOINT 1: Inicialización de Unidades de Proyecto ====================#
+# ==================== ENDPOINT 1: InicializaciÃ³n de Unidades de Proyecto ====================#
 GESTORPROYECTO_API_BASE = "https://gestorproyectoapi-production.up.railway.app"
 
 
 @router.get(
     "/init/unidades-proyecto",
-    summary="🔵 GET | Inicialización de Unidades de Proyecto",
+    summary="ðŸ”µ GET | InicializaciÃ³n de Unidades de Proyecto",
     description="""
-## 🔵 GET | Inicialización de Unidades de Proyecto
+## ðŸ”µ GET | InicializaciÃ³n de Unidades de Proyecto
 
-**Propósito**: Obtener datos iniciales de unidades de proyecto para el artefacto de captura.
+**PropÃ³sito**: Obtener datos iniciales de unidades de proyecto para el artefacto de captura.
 
-### ✅ Respuesta
+### âœ… Respuesta
 Retorna la respuesta original de la API de GestorProyecto.
 
-### 📝 Ejemplo de uso:
+### ðŸ“ Ejemplo de uso:
 ```javascript
 const response = await fetch('/init/unidades-proyecto');
 const data = await response.json();
@@ -938,27 +945,27 @@ async def get_init_unidades_proyecto():
 # ==================== ENDPOINT 2: Registro de Visita ====================
 @router.post(
     "/registrar-visita/",
-    summary="🟢 POST | Registro de Visita",
+    summary="ðŸŸ¢ POST | Registro de Visita",
     description="""
-## 🟢 POST | Registro de Visita
+## ðŸŸ¢ POST | Registro de Visita
 
-**Propósito**: Registrar una visita realizada con información de ubicación,
-descripción, observaciones, acompañantes y fecha/hora.
+**PropÃ³sito**: Registrar una visita realizada con informaciÃ³n de ubicaciÃ³n,
+descripciÃ³n, observaciones, acompaÃ±antes y fecha/hora.
 
-### ✅ Campos requeridos:
+### âœ… Campos requeridos:
 - **barrio_vereda**: Nombre del barrio o vereda (texto)
 - **comuna_corregimiento**: Comuna o corregimiento (texto)
-- **descripcion_visita**: Descripción de la visita (texto)
+- **descripcion_visita**: DescripciÃ³n de la visita (texto)
 - **observaciones_visita**: Observaciones de la visita (texto)
-- **acompanantes**: (Opcional) Array JSON con datos de acompañantes: [{"nombre_completo", "telefono", "email", "centro_gestor"}, ...]
+- **acompanantes**: (Opcional) Array JSON con datos de acompaÃ±antes: [{"nombre_completo", "telefono", "email", "centro_gestor"}, ...]
 - **fecha_visita**: Fecha de la visita en formato dd/mm/aaaa
-- **hora_visita**: Hora de la visita en formato HH:mm (hora de Bogotá, Colombia)
+- **hora_visita**: Hora de la visita en formato HH:mm (hora de BogotÃ¡, Colombia)
 
-### 🔢 VID (ID de Visita):
-El sistema genera automáticamente un ID único con formato **VID-#** donde # es un 
+### ðŸ”¢ VID (ID de Visita):
+El sistema genera automÃ¡ticamente un ID Ãºnico con formato **VID-#** donde # es un 
 consecutivo incremental. Ejemplo: VID-1, VID-2, VID-3...
 
-### 📝 Ejemplo de uso con JSON:
+### ðŸ“ Ejemplo de uso con JSON:
 ```javascript
 const response = await fetch('/registrar-visita/', {
     method: 'POST',
@@ -966,17 +973,17 @@ const response = await fetch('/registrar-visita/', {
     body: JSON.stringify({
         barrio_vereda: 'San Fernando',
         comuna_corregimiento: 'Comuna 3',
-        descripcion_visita: 'Visita de inspección ambiental',
-        observaciones_visita: 'Se encontraron residuos sólidos en la zona',
+        descripcion_visita: 'Visita de inspecciÃ³n ambiental',
+        observaciones_visita: 'Se encontraron residuos sÃ³lidos en la zona',
         acompanantes: [
             {
-                nombre_completo: 'Juan Pérez',
+                nombre_completo: 'Juan PÃ©rez',
                 telefono: '3001234567',
                 email: 'juan@example.com',
                 centro_gestor: 'Centro Gestor Norte'
             },
             {
-                nombre_completo: 'María López',
+                nombre_completo: 'MarÃ­a LÃ³pez',
                 telefono: '3009876543',
                 email: 'maria@example.com',
                 centro_gestor: 'Centro Gestor Sur'
@@ -988,7 +995,7 @@ const response = await fetch('/registrar-visita/', {
 });
 ```
 
-### ✅ Respuesta exitosa:
+### âœ… Respuesta exitosa:
 ```json
 {
     "success": true,
@@ -996,17 +1003,17 @@ const response = await fetch('/registrar-visita/', {
     "message": "Visita registrada exitosamente",
     "barrio_vereda": "San Fernando",
     "comuna_corregimiento": "Comuna 3",
-    "descripcion_visita": "Visita de inspección ambiental",
-    "observaciones_visita": "Se encontraron residuos sólidos en la zona",
+    "descripcion_visita": "Visita de inspecciÃ³n ambiental",
+    "observaciones_visita": "Se encontraron residuos sÃ³lidos en la zona",
     "acompanantes": [
         {
-            "nombre_completo": "Juan Pérez",
+            "nombre_completo": "Juan PÃ©rez",
             "telefono": "3001234567",
             "email": "juan@example.com",
             "centro_gestor": "Centro Gestor Norte"
         },
         {
-            "nombre_completo": "María López",
+            "nombre_completo": "MarÃ­a LÃ³pez",
             "telefono": "3009876543",
             "email": "maria@example.com",
             "centro_gestor": "Centro Gestor Sur"
@@ -1022,8 +1029,8 @@ const response = await fetch('/registrar-visita/', {
 )
 async def post_registro_visita(payload: RegistroVisitaRequest):
     """
-    Registrar una visita. Geocodifica la dirección para obtener coordenadas WGS84
-    y determina barrio/vereda y comuna/corregimiento por intersección geográfica.
+    Registrar una visita. Geocodifica la direcciÃ³n para obtener coordenadas WGS84
+    y determina barrio/vereda y comuna/corregimiento por intersecciÃ³n geogrÃ¡fica.
     """
     import re
 
@@ -1039,31 +1046,31 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
         if not re.match(r'^\d{2}/\d{2}/\d{4}$', fecha_visita):
             raise HTTPException(
                 status_code=400,
-                detail="Formato de fecha_visita inválido. Debe ser dd/mm/aaaa (ejemplo: 18/04/2026)"
+                detail="Formato de fecha_visita invÃ¡lido. Debe ser dd/mm/aaaa (ejemplo: 18/04/2026)"
             )
         try:
             datetime.strptime(fecha_visita, "%d/%m/%Y")
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Fecha inválida: {fecha_visita}. Verifique que sea una fecha real en formato dd/mm/aaaa"
+                detail=f"Fecha invÃ¡lida: {fecha_visita}. Verifique que sea una fecha real en formato dd/mm/aaaa"
             )
 
         # Validar formato hora_visita HH:mm
         if not re.match(r'^\d{2}:\d{2}$', hora_visita):
             raise HTTPException(
                 status_code=400,
-                detail="Formato de hora_visita inválido. Debe ser HH:mm (ejemplo: 14:30)"
+                detail="Formato de hora_visita invÃ¡lido. Debe ser HH:mm (ejemplo: 14:30)"
             )
         try:
             datetime.strptime(hora_visita, "%H:%M")
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Hora inválida: {hora_visita}. Verifique que sea una hora real en formato HH:mm"
+                detail=f"Hora invÃ¡lida: {hora_visita}. Verifique que sea una hora real en formato HH:mm"
             )
 
-        # Geocodificar dirección → coordenadas WGS84
+        # Geocodificar direcciÃ³n â†’ coordenadas WGS84
         geo = await geocodificar_direccion_cali(direccion_visita)
         coords_dict = None
         geocodificacion_fuente = None
@@ -1075,13 +1082,13 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             lon = geo["lon"]
             geocodificacion_fuente = geo.get("proveedor")
             coords_dict = {"type": "Point", "coordinates": [lon, lat]}
-            # Intersección geográfica con basemaps
+            # IntersecciÃ³n geogrÃ¡fica con basemaps
             geo_result = geolocate_point(lon, lat)
             barrio_vereda = geo_result["barrio_vereda"]
             comuna_corregimiento = geo_result["comuna_corregimiento"]
-            print(f"📍 Barrio: {barrio_vereda} | Comuna: {comuna_corregimiento}")
+            print(f"ðŸ“ Barrio: {barrio_vereda} | Comuna: {comuna_corregimiento}")
         else:
-            print(f"⚠️ No se pudo geocodificar '{direccion_visita}', se registra sin coordenadas")
+            print(f"âš ï¸ No se pudo geocodificar '{direccion_visita}', se registra sin coordenadas")
 
         # Generar VID con consecutivo incremental
         try:
@@ -1097,7 +1104,7 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             vid = f"VID-{new_vid_number}"
 
         except Exception as e:
-            print(f"❌ Error generando VID: {str(e)}")
+            print(f"âŒ Error generando VID: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error generando VID: {str(e)}"
@@ -1117,16 +1124,16 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             "acompanantes": [a.model_dump() for a in acompanantes] if acompanantes else None,
             "fecha_visita": fecha_visita,
             "hora_visita": hora_visita,
-            "created_at": datetime.utcnow().isoformat(),
-            "timestamp": datetime.utcnow().isoformat()
+            "created_at": now_colombia().isoformat(),
+            "timestamp": now_colombia().isoformat()
         }
 
         # Guardar en Firebase
         try:
             db.collection('visitas').document(vid).set(visita_data)
-            print(f"✅ Visita {vid} guardada en Firebase")
+            print(f"âœ… Visita {vid} guardada en Firebase")
         except Exception as e:
-            print(f"❌ Error guardando en Firebase: {str(e)}")
+            print(f"âŒ Error guardando en Firebase: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
@@ -1146,7 +1153,7 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
             acompanantes=[a.model_dump() for a in acompanantes] if acompanantes else None,
             fecha_visita=fecha_visita,
             hora_visita=hora_visita,
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=now_colombia().isoformat()
         )
 
     except HTTPException:
@@ -1161,19 +1168,19 @@ async def post_registro_visita(payload: RegistroVisitaRequest):
 # ==================== ENDPOINT: Obtener Visitas Programadas ====================
 @router.get(
     "/obtener-visitas-programadas/",
-    summary="🔵 GET | Obtener Visitas Programadas",
+    summary="ðŸ”µ GET | Obtener Visitas Programadas",
     description="""
-## 🔵 GET | Obtener Visitas Programadas
+## ðŸ”µ GET | Obtener Visitas Programadas
 
-**Propósito**: Obtener todos los registros de la colección "visitas" almacenados en Firebase.
+**PropÃ³sito**: Obtener todos los registros de la colecciÃ³n "visitas" almacenados en Firebase.
 
-### 📝 Ejemplo de uso:
+### ðŸ“ Ejemplo de uso:
 ```javascript
 const response = await fetch('/obtener-visitas-programadas/');
 const data = await response.json();
 ```
 
-### ✅ Respuesta exitosa:
+### âœ… Respuesta exitosa:
 ```json
 {
     "success": true,
@@ -1183,8 +1190,8 @@ const data = await response.json();
             "vid": "VID-1",
             "barrio_vereda": "San Fernando",
             "comuna_corregimiento": "Comuna 3",
-            "descripcion_visita": "Visita de inspección ambiental",
-            "observaciones_visita": "Se encontraron residuos sólidos",
+            "descripcion_visita": "Visita de inspecciÃ³n ambiental",
+            "observaciones_visita": "Se encontraron residuos sÃ³lidos",
             "acompanantes": [...],
             "fecha_visita": "13/04/2026",
             "hora_visita": "14:30",
@@ -1197,7 +1204,7 @@ const data = await response.json();
 )
 async def obtener_visitas_programadas():
     """
-    Obtener todos los registros de la colección visitas
+    Obtener todos los registros de la colecciÃ³n visitas
     """
     try:
         visitas_ref = db.collection('visitas')
@@ -1222,16 +1229,16 @@ async def obtener_visitas_programadas():
 # ==================== ENDPOINT 3: Obtener Reportes ====================#
 @router.get(
     "/grupo-operativo/reportes",
-    summary="🔵 GET | Obtener Reportes",
+    summary="ðŸ”µ GET | Obtener Reportes",
     description="""
-## 🔵 GET | Obtener Reportes del Grupo Operativo
+## ðŸ”µ GET | Obtener Reportes del Grupo Operativo
 
-**Propósito**: Consultar todos los reportes registrados por el grupo operativo.
+**PropÃ³sito**: Consultar todos los reportes registrados por el grupo operativo.
 
-### ✅ Respuesta
+### âœ… Respuesta
 Retorna lista de reportes con sus detalles.
 
-### 📝 Ejemplo de uso:
+### ðŸ“ Ejemplo de uso:
 ```javascript
 const response = await fetch('/grupo-operativo/reportes');
 const reportes = await response.json();
@@ -1254,7 +1261,7 @@ async def get_reportes():
             "success": True,
             "data": reportes,
             "count": len(reportes),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
     except Exception as e:
         raise HTTPException(
@@ -1266,27 +1273,27 @@ async def get_reportes():
 # ==================== ENDPOINT 4: Eliminar Reporte ====================#
 @router.delete(
     "/grupo-operativo/eliminar-reporte",
-    summary="🔴 DELETE | Eliminar Reporte",
+    summary="ðŸ”´ DELETE | Eliminar Reporte",
     description="""
-## 🔴 DELETE | Eliminar Reporte del Grupo Operativo
+## ðŸ”´ DELETE | Eliminar Reporte del Grupo Operativo
 
-**Propósito**: Eliminar un reporte específico del sistema, incluyendo las fotos en S3.
+**PropÃ³sito**: Eliminar un reporte especÃ­fico del sistema, incluyendo las fotos en S3.
 
-### 📥 Parámetros
-- **reporte_id**: ID único del reporte a eliminar
+### ðŸ“¥ ParÃ¡metros
+- **reporte_id**: ID Ãºnico del reporte a eliminar
 
-### 🗑️ Acciones realizadas:
-1. Eliminar imágenes del bucket S3 (360-dagma-photos)
+### ðŸ—‘ï¸ Acciones realizadas:
+1. Eliminar imÃ¡genes del bucket S3 (360-dagma-photos)
 2. Eliminar documento de Firebase (reconocimientos_dagma)
 
-### 📝 Ejemplo de uso:
+### ðŸ“ Ejemplo de uso:
 ```javascript
 const response = await fetch('/grupo-operativo/eliminar-reporte?reporte_id=abc-123', {
     method: 'DELETE'
 });
 ```
 
-### ✅ Respuesta exitosa:
+### âœ… Respuesta exitosa:
 ```json
 {
     "success": true,
@@ -1339,7 +1346,7 @@ async def delete_reporte(
             "id": reporte_id,
             "message": "Reporte eliminado exitosamente",
             "photos_deleted": photos_deleted,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
 
     except HTTPException:
@@ -1354,30 +1361,30 @@ async def delete_reporte(
 # ==================== ENDPOINT: Registrar Asistencia de Delegado ====================#
 @router.post(
     "/registrar-asistencia-delegado",
-    summary="🟢 POST | Registrar Asistencia de Delegado",
+    summary="ðŸŸ¢ POST | Registrar Asistencia de Delegado",
     description="""
-## 🟢 POST | Registrar Asistencia de Delegado
+## ðŸŸ¢ POST | Registrar Asistencia de Delegado
 
-**Propósito**: Registrar la asistencia de un delegado o acompañante a una visita,
-incluyendo información personal, ubicación GPS y timestamp del registro.
+**PropÃ³sito**: Registrar la asistencia de un delegado o acompaÃ±ante a una visita,
+incluyendo informaciÃ³n personal, ubicaciÃ³n GPS y timestamp del registro.
 
-### ✅ Campos requeridos:
+### âœ… Campos requeridos:
 - **vid**: ID de la visita (texto)
-- **id_acompanante**: ID único del acompañante (texto)
+- **id_acompanante**: ID Ãºnico del acompaÃ±ante (texto)
 - **nombre_completo**: Nombre completo del delegado (texto)
 - **rol**: Rol o cargo del delegado (texto)
 - **nombre_centro_gestor**: Nombre del centro gestor (texto)
-- **telefono**: Número de teléfono de contacto (texto)
-- **email**: Correo electrónico (texto)
-- **latitud**: Latitud GPS (número como texto)
-- **longitud**: Longitud GPS (número como texto)
+- **telefono**: NÃºmero de telÃ©fono de contacto (texto)
+- **email**: Correo electrÃ³nico (texto)
+- **latitud**: Latitud GPS (nÃºmero como texto)
+- **longitud**: Longitud GPS (nÃºmero como texto)
 
-### 📝 Ejemplo de uso con form-urlencoded:
+### ðŸ“ Ejemplo de uso con form-urlencoded:
 ```javascript
 const data = new URLSearchParams();
 data.append('vid', 'VID-1');
 data.append('id_acompanante', 'ACMP-001');
-data.append('nombre_completo', 'Juan Pérez García');
+data.append('nombre_completo', 'Juan PÃ©rez GarcÃ­a');
 data.append('rol', 'Supervisor');
 data.append('nombre_centro_gestor', 'Centro Administrativo');
 data.append('telefono', '+57 300 1234567');
@@ -1392,14 +1399,14 @@ const response = await fetch('/registrar-asistencia-delegado', {
 });
 ```
 
-### ✅ Respuesta exitosa:
+### âœ… Respuesta exitosa:
 ```json
 {
     "success": true,
     "vid": "VID-1",
     "id_acompanante": "ACMP-001",
     "message": "Asistencia de delegado registrada exitosamente",
-    "nombre_completo": "Juan Pérez García",
+    "nombre_completo": "Juan PÃ©rez GarcÃ­a",
     "rol": "Supervisor",
     "nombre_centro_gestor": "Centro Administrativo",
     "telefono": "+57 300 1234567",
@@ -1415,17 +1422,17 @@ const response = await fetch('/registrar-asistencia-delegado', {
 )
 async def post_registrar_asistencia_delegado(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
-    id_acompanante: str = Form(..., min_length=1, description="ID del acompañante"),
+    id_acompanante: str = Form(..., min_length=1, description="ID del acompaÃ±ante"),
     nombre_completo: str = Form(..., min_length=1, description="Nombre completo del delegado"),
     rol: str = Form(..., min_length=1, description="Rol o cargo del delegado"),
     nombre_centro_gestor: str = Form(..., min_length=1, description="Nombre del centro gestor"),
-    telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
-    email: str = Form(..., min_length=1, description="Correo electrónico"),
+    telefono: str = Form(..., min_length=1, description="NÃºmero de telÃ©fono de contacto"),
+    email: str = Form(..., min_length=1, description="Correo electrÃ³nico"),
     latitud: str = Form(..., description="Latitud GPS"),
     longitud: str = Form(..., description="Longitud GPS")
 ):
     """
-    Registrar la asistencia de un delegado o acompañante a una visita
+    Registrar la asistencia de un delegado o acompaÃ±ante a una visita
     """
     try:
         # Validar y parsear coordenadas
@@ -1435,9 +1442,9 @@ async def post_registrar_asistencia_delegado(
 
             # Validar rango de coordenadas
             if not (-90 <= lat <= 90):
-                raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
+                raise ValueError(f"Latitud invÃ¡lida: {lat}. Debe estar entre -90 y 90")
             if not (-180 <= lng <= 180):
-                raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
+                raise ValueError(f"Longitud invÃ¡lida: {lng}. Debe estar entre -180 y 180")
 
         except ValueError as e:
             raise HTTPException(
@@ -1445,17 +1452,17 @@ async def post_registrar_asistencia_delegado(
                 detail=f"Error en coordenadas: {str(e)}"
             )
 
-        # Validar formato de email básico
+        # Validar formato de email bÃ¡sico
         if "@" not in email or "." not in email:
             raise HTTPException(
                 status_code=400,
-                detail="Formato de email inválido"
+                detail="Formato de email invÃ¡lido"
             )
 
         # Generar timestamp del momento del registro
-        fecha_registro = datetime.utcnow()
+        fecha_registro = now_colombia()
 
-        # Crear ID único para el documento (combinación de VID e ID_acompanante)
+        # Crear ID Ãºnico para el documento (combinaciÃ³n de VID e ID_acompanante)
         doc_id = f"{vid}_{id_acompanante}"
 
         # Preparar datos para guardar en Firebase
@@ -1477,9 +1484,9 @@ async def post_registrar_asistencia_delegado(
         # Guardar en Firebase
         try:
             db.collection('delegados_asistencia').document(doc_id).set(delegado_data)
-            print(f"✅ Asistencia de delegado {id_acompanante} para visita {vid} guardada en Firebase")
+            print(f"âœ… Asistencia de delegado {id_acompanante} para visita {vid} guardada en Firebase")
         except Exception as e:
-            print(f"❌ Error guardando en Firebase: {str(e)}")
+            print(f"âŒ Error guardando en Firebase: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
@@ -1498,7 +1505,7 @@ async def post_registrar_asistencia_delegado(
             latitud=latitud,
             longitud=longitud,
             fecha_registro=fecha_registro.isoformat(),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=now_colombia().isoformat()
         )
 
     except HTTPException:
@@ -1513,27 +1520,27 @@ async def post_registrar_asistencia_delegado(
 # ==================== ENDPOINT: Registrar Asistencia de Comunidad ====================#
 @router.post(
     "/registrar-asistencia-comunidad",
-    summary="🟢 POST | Registrar Asistencia de Comunidad",
+    summary="ðŸŸ¢ POST | Registrar Asistencia de Comunidad",
     description="""
-## 🟢 POST | Registrar Asistencia de Comunidad
+## ðŸŸ¢ POST | Registrar Asistencia de Comunidad
 
-**Propósito**: Registrar la asistencia de un miembro de la comunidad a una visita,
-incluyendo información personal, dirección, ubicación GPS y timestamp del registro.
+**PropÃ³sito**: Registrar la asistencia de un miembro de la comunidad a una visita,
+incluyendo informaciÃ³n personal, direcciÃ³n, ubicaciÃ³n GPS y timestamp del registro.
 
-### ✅ Campos requeridos:
+### âœ… Campos requeridos:
 - **vid**: ID de la visita (texto)
-- **id_asistente_comunidad**: ID único del asistente de la comunidad (texto)
+- **id_asistente_comunidad**: ID Ãºnico del asistente de la comunidad (texto)
 - **nombre_completo**: Nombre completo del asistente (texto)
 - **rol_comunidad**: Rol en la comunidad (texto)
-- **direccion**: Dirección de residencia (texto)
+- **direccion**: DirecciÃ³n de residencia (texto)
 - **barrio_vereda**: Nombre del barrio o vereda (texto)
 - **comuna_corregimiento**: Comuna o corregimiento (texto)
-- **telefono**: Número de teléfono de contacto (texto)
-- **email**: Correo electrónico (texto)
-- **latitud**: Latitud GPS (número como texto)
-- **longitud**: Longitud GPS (número como texto)
+- **telefono**: NÃºmero de telÃ©fono de contacto (texto)
+- **email**: Correo electrÃ³nico (texto)
+- **latitud**: Latitud GPS (nÃºmero como texto)
+- **longitud**: Longitud GPS (nÃºmero como texto)
 
-### ✅ Respuesta exitosa:
+### âœ… Respuesta exitosa:
 ```json
 {
     "success": true,
@@ -1554,11 +1561,11 @@ async def post_registrar_asistencia_comunidad(
     id_asistente_comunidad: str = Form(..., min_length=1, description="ID del asistente de la comunidad"),
     nombre_completo: str = Form(..., min_length=1, description="Nombre completo del asistente"),
     rol_comunidad: str = Form(..., min_length=1, description="Rol en la comunidad"),
-    direccion: str = Form(..., min_length=1, description="Dirección de residencia"),
+    direccion: str = Form(..., min_length=1, description="DirecciÃ³n de residencia"),
     barrio_vereda: str = Form(..., min_length=1, description="Nombre del barrio o vereda"),
     comuna_corregimiento: str = Form(..., min_length=1, description="Comuna o corregimiento"),
-    telefono: str = Form(..., min_length=1, description="Número de teléfono de contacto"),
-    email: str = Form(..., min_length=1, description="Correo electrónico"),
+    telefono: str = Form(..., min_length=1, description="NÃºmero de telÃ©fono de contacto"),
+    email: str = Form(..., min_length=1, description="Correo electrÃ³nico"),
     latitud: str = Form(..., description="Latitud GPS"),
     longitud: str = Form(..., description="Longitud GPS")
 ):
@@ -1573,9 +1580,9 @@ async def post_registrar_asistencia_comunidad(
 
             # Validar rango de coordenadas
             if not (-90 <= lat <= 90):
-                raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
+                raise ValueError(f"Latitud invÃ¡lida: {lat}. Debe estar entre -90 y 90")
             if not (-180 <= lng <= 180):
-                raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
+                raise ValueError(f"Longitud invÃ¡lida: {lng}. Debe estar entre -180 y 180")
 
         except ValueError as e:
             raise HTTPException(
@@ -1583,17 +1590,17 @@ async def post_registrar_asistencia_comunidad(
                 detail=f"Error en coordenadas: {str(e)}"
             )
 
-        # Validar formato de email básico
+        # Validar formato de email bÃ¡sico
         if "@" not in email or "." not in email:
             raise HTTPException(
                 status_code=400,
-                detail="Formato de email inválido"
+                detail="Formato de email invÃ¡lido"
             )
 
         # Generar timestamp del momento del registro
-        fecha_registro = datetime.utcnow()
+        fecha_registro = now_colombia()
 
-        # Crear ID único para el documento (combinación de VID e ID_asistente_comunidad)
+        # Crear ID Ãºnico para el documento (combinaciÃ³n de VID e ID_asistente_comunidad)
         doc_id = f"{vid}_{id_asistente_comunidad}"
 
         # Preparar datos para guardar en Firebase
@@ -1617,9 +1624,9 @@ async def post_registrar_asistencia_comunidad(
         # Guardar en Firebase
         try:
             db.collection('comunidad_asistencia').document(doc_id).set(comunidad_data)
-            print(f"✅ Asistencia de comunidad {id_asistente_comunidad} para visita {vid} guardada en Firebase")
+            print(f"âœ… Asistencia de comunidad {id_asistente_comunidad} para visita {vid} guardada en Firebase")
         except Exception as e:
-            print(f"❌ Error guardando en Firebase: {str(e)}")
+            print(f"âŒ Error guardando en Firebase: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
@@ -1640,7 +1647,7 @@ async def post_registrar_asistencia_comunidad(
             latitud=latitud,
             longitud=longitud,
             fecha_registro=fecha_registro.isoformat(),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=now_colombia().isoformat()
         )
 
     except HTTPException:
@@ -1655,35 +1662,35 @@ async def post_registrar_asistencia_comunidad(
 # ==================== ENDPOINT: Crear Delegado ====================#
 @router.post(
     "/crear-delegado/",
-    summary="🟢 POST | Crear Delegado",
+    summary="ðŸŸ¢ POST | Crear Delegado",
     description="""
-## 🟢 POST | Crear Delegado
+## ðŸŸ¢ POST | Crear Delegado
 
-**Propósito**: Crear un nuevo registro de delegado en la colección "directorio_contactos".
+**PropÃ³sito**: Crear un nuevo registro de delegado en la colecciÃ³n "directorio_contactos".
 
-### ✅ Campos requeridos:
+### âœ… Campos requeridos:
 - **nombre_completo**: Nombre completo del delegado (texto)
-- **telefono**: Teléfono de contacto (texto)
-- **email**: Correo electrónico (texto)
+- **telefono**: TelÃ©fono de contacto (texto)
+- **email**: Correo electrÃ³nico (texto)
 - **centro_gestor**: Centro gestor al que pertenece (texto)
 
-### ✅ Campos opcionales:
-- **cedula**: Cédula del delegado (texto)
+### âœ… Campos opcionales:
+- **cedula**: CÃ©dula del delegado (texto)
 - **rol**: Rol o cargo (texto)
 - **organismo**: Organismo al que pertenece (texto)
 
-### 📝 Ejemplo de uso:
+### ðŸ“ Ejemplo de uso:
 ```javascript
 const response = await fetch('/crear-delegado/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-        nombre_completo: 'Juan Pérez',
+        nombre_completo: 'Juan PÃ©rez',
         telefono: '3001234567',
         email: 'juan@example.com',
         centro_gestor: 'Centro Gestor Norte',
         cedula: '1234567890',
-        rol: 'Líder ambiental',
+        rol: 'LÃ­der ambiental',
         organismo: 'DAGMA'
     })
 });
@@ -1692,7 +1699,7 @@ const response = await fetch('/crear-delegado/', {
 )
 async def crear_delegado(payload: dict = Body(...)):
     """
-    Crear un nuevo delegado en la colección directorio_contactos
+    Crear un nuevo delegado en la colecciÃ³n directorio_contactos
     """
     try:
         # Validar campos requeridos
@@ -1712,8 +1719,8 @@ async def crear_delegado(payload: dict = Body(...)):
             "cedula": str(payload.get("cedula", "")),
             "rol": payload.get("rol", ""),
             "organismo": payload.get("organismo", ""),
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat()
+            "created_at": now_colombia().isoformat(),
+            "updated_at": now_colombia().isoformat()
         }
 
         doc_ref = db.collection("directorio_contactos").document()
@@ -1724,7 +1731,7 @@ async def crear_delegado(payload: dict = Body(...)):
             "id": doc_ref.id,
             "message": "Delegado creado exitosamente",
             "delegado": delegado_data,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
 
     except HTTPException:
@@ -1739,26 +1746,26 @@ async def crear_delegado(payload: dict = Body(...)):
 # ==================== ENDPOINT: Actualizar Delegado ====================#
 @router.patch(
     "/actualizar-delegado/{delegado_id}",
-    summary="🟡 PATCH | Actualizar Delegado",
+    summary="ðŸŸ¡ PATCH | Actualizar Delegado",
     description="""
-## 🟡 PATCH | Actualizar Delegado
+## ðŸŸ¡ PATCH | Actualizar Delegado
 
-**Propósito**: Actualizar parcialmente los datos de un delegado existente en la colección "directorio_contactos".
+**PropÃ³sito**: Actualizar parcialmente los datos de un delegado existente en la colecciÃ³n "directorio_contactos".
 Solo se actualizan los campos enviados en el body.
 
-### ✅ Parámetro de ruta:
+### âœ… ParÃ¡metro de ruta:
 - **delegado_id**: ID del documento del delegado en Firestore
 
-### ✅ Campos actualizables (todos opcionales):
+### âœ… Campos actualizables (todos opcionales):
 - **nombre_completo**: Nombre completo del delegado
-- **telefono**: Teléfono de contacto
-- **email**: Correo electrónico
+- **telefono**: TelÃ©fono de contacto
+- **email**: Correo electrÃ³nico
 - **centro_gestor**: Centro gestor
-- **cedula**: Cédula del delegado
+- **cedula**: CÃ©dula del delegado
 - **rol**: Rol o cargo
 - **organismo**: Organismo al que pertenece
 
-### 📝 Ejemplo de uso:
+### ðŸ“ Ejemplo de uso:
 ```javascript
 const response = await fetch('/actualizar-delegado/ABC123docId', {
     method: 'PATCH',
@@ -1794,16 +1801,16 @@ async def actualizar_delegado(delegado_id: str, payload: dict = Body(...)):
         if not update_data:
             raise HTTPException(
                 status_code=400,
-                detail=f"No se enviaron campos válidos para actualizar. Campos permitidos: {', '.join(campos_permitidos)}"
+                detail=f"No se enviaron campos vÃ¡lidos para actualizar. Campos permitidos: {', '.join(campos_permitidos)}"
             )
 
-        # Convertir telefono y cedula a string si vienen como número
+        # Convertir telefono y cedula a string si vienen como nÃºmero
         if "telefono" in update_data:
             update_data["telefono"] = str(update_data["telefono"])
         if "cedula" in update_data:
             update_data["cedula"] = str(update_data["cedula"])
 
-        update_data["updated_at"] = datetime.utcnow().isoformat()
+        update_data["updated_at"] = now_colombia().isoformat()
 
         doc_ref.update(update_data)
 
@@ -1817,7 +1824,7 @@ async def actualizar_delegado(delegado_id: str, payload: dict = Body(...)):
             "message": "Delegado actualizado exitosamente",
             "campos_actualizados": list(update_data.keys()),
             "delegado": updated_doc,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_colombia().isoformat()
         }
 
     except HTTPException:
@@ -1832,62 +1839,62 @@ async def actualizar_delegado(delegado_id: str, payload: dict = Body(...)):
 # ==================== ENDPOINT: Registrar Requerimiento ====================#
 @router.post(
     "/registrar-requerimiento",
-    summary="🟢 POST | Registrar Requerimiento",
+    summary="ðŸŸ¢ POST | Registrar Requerimiento",
     description="""
-## 🟢 POST | Registrar Requerimiento
+## ðŸŸ¢ POST | Registrar Requerimiento
 
-**Propósito**: Registrar un nuevo requerimiento con datos del solicitante,
+**PropÃ³sito**: Registrar un nuevo requerimiento con datos del solicitante,
 coordenadas GPS del dispositivo, nota de voz opcional y organismos encargados.
-El sistema determina automáticamente el barrio/vereda y comuna/corregimiento
-mediante intersección geográfica con los basemaps.
+El sistema determina automÃ¡ticamente el barrio/vereda y comuna/corregimiento
+mediante intersecciÃ³n geogrÃ¡fica con los basemaps.
 
-### ✅ Campos requeridos:
+### âœ… Campos requeridos:
 - **vid**: ID de la visita (texto)
-- **datos_solicitante**: Datos del solicitante en formato JSON string (diccionario con datos de una o más personas)
-- **requerimiento**: Descripción del requerimiento (texto)
+- **datos_solicitante**: Datos del solicitante en formato JSON string (diccionario con datos de una o mÃ¡s personas)
+- **requerimiento**: DescripciÃ³n del requerimiento (texto)
 - **observaciones**: Observaciones adicionales (texto)
 - **coords**: Coordenadas GPS en formato GeoJSON Point string `{"type": "Point", "coordinates": [lng, lat]}`
 - **organismos_encargados**: Lista de nombres de centros gestores en formato JSON array `["nombre1", "nombre2"]`
 
-### 📥 Campos opcionales:
+### ðŸ“¥ Campos opcionales:
 - **nota_voz**: Archivo de audio (opcional)
 
-### 🔢 RID (ID de Requerimiento):
-El sistema genera automáticamente un ID único con formato **REQ-#** donde # es un 
+### ðŸ”¢ RID (ID de Requerimiento):
+El sistema genera automÃ¡ticamente un ID Ãºnico con formato **REQ-#** donde # es un 
 consecutivo incremental dentro de cada visita. Ejemplo: REQ-1, REQ-2, REQ-3...
 
-### 📍 Estado:
+### ðŸ“ Estado:
 Por defecto, el registro se crea con estado "Pendiente".
 
-### 📍 Coordenadas GPS:
+### ðŸ“ Coordenadas GPS:
 Debes enviar las coordenadas como un string JSON en formato GeoJSON Point:
 ```json
 {"type": "Point", "coordinates": [-76.5320, 3.4516]}
 ```
-El sistema automáticamente determinará el barrio/vereda y la comuna/corregimiento
-correspondientes usando intersección geográfica.
+El sistema automÃ¡ticamente determinarÃ¡ el barrio/vereda y la comuna/corregimiento
+correspondientes usando intersecciÃ³n geogrÃ¡fica.
 
-### 👤 Datos del Solicitante:
-Se envía como un diccionario JSON que puede contener datos de una o más personas:
+### ðŸ‘¤ Datos del Solicitante:
+Se envÃ­a como un diccionario JSON que puede contener datos de una o mÃ¡s personas:
 ```json
 {
     "personas": [
-        {"nombre": "María López", "email": "maria@example.com", "telefono": "+57 300 1234567", "centro_gestor": "DAGMA"},
-        {"nombre": "Juan Pérez", "email": "juan@example.com", "telefono": "+57 310 9876543"}
+        {"nombre": "MarÃ­a LÃ³pez", "email": "maria@example.com", "telefono": "+57 300 1234567", "centro_gestor": "DAGMA"},
+        {"nombre": "Juan PÃ©rez", "email": "juan@example.com", "telefono": "+57 310 9876543"}
     ]
 }
 ```
 
-### 🎤 Nota de Voz:
+### ðŸŽ¤ Nota de Voz:
 Si se incluye un archivo de audio, este se sube a S3 y se retorna la URL.
 
-### 📝 Ejemplo de uso con FormData:
+### ðŸ“ Ejemplo de uso con FormData:
 ```javascript
 const coords = JSON.stringify({type: "Point", coordinates: [-76.5320, 3.4516]});
-const organismos = JSON.stringify(["DAGMA", "Secretaría de Obras"]);
+const organismos = JSON.stringify(["DAGMA", "SecretarÃ­a de Obras"]);
 const datosSolicitante = JSON.stringify({
     personas: [
-        {nombre: "María López", email: "maria@example.com", telefono: "+57 300 1234567", centro_gestor: "DAGMA"}
+        {nombre: "MarÃ­a LÃ³pez", email: "maria@example.com", telefono: "+57 300 1234567", centro_gestor: "DAGMA"}
     ]
 });
 
@@ -1895,7 +1902,7 @@ const formData = new FormData();
 formData.append('vid', 'VID-1');
 formData.append('datos_solicitante', datosSolicitante);
 formData.append('requerimiento', 'Solicitud de mejoramiento vial');
-formData.append('observaciones', 'Urgente, vía en mal estado');
+formData.append('observaciones', 'Urgente, vÃ­a en mal estado');
 formData.append('coords', coords);
 formData.append('organismos_encargados', organismos);
 
@@ -1910,23 +1917,23 @@ const response = await fetch('/registrar-requerimiento', {
 });
 ```
 
-### ✅ Respuesta exitosa:
+### âœ… Respuesta exitosa:
 ```json
 {
     "success": true,
     "vid": "VID-1",
     "rid": "REQ-1",
     "message": "Requerimiento registrado exitosamente",
-    "datos_solicitante": {"personas": [{"nombre": "María López", "email": "maria@example.com"}]},
+    "datos_solicitante": {"personas": [{"nombre": "MarÃ­a LÃ³pez", "email": "maria@example.com"}]},
     "requerimiento": "Solicitud de mejoramiento vial",
-    "observaciones": "Urgente, vía en mal estado",
+    "observaciones": "Urgente, vÃ­a en mal estado",
     "barrio_vereda": "San Fernando",
     "comuna_corregimiento": "COMUNA 03",
     "coords": {"type": "Point", "coordinates": [-76.5320, 3.4516]},
     "estado": "Pendiente",
     "nota_voz_url": "https://s3.amazonaws.com/bucket/audio.mp3",
     "fecha_registro": "2026-02-06T15:30:45.123456",
-    "organismos_encargados": ["DAGMA", "Secretaría de Obras"],
+    "organismos_encargados": ["DAGMA", "SecretarÃ­a de Obras"],
     "timestamp": "2026-02-06T15:30:45.123456"
 }
 ```
@@ -1935,19 +1942,19 @@ const response = await fetch('/registrar-requerimiento', {
 )
 async def post_registrar_requerimiento(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
-    datos_solicitante: str = Form(..., min_length=1, description="Datos del solicitante en formato JSON (diccionario con datos de una o más personas)"),
+    datos_solicitante: str = Form(..., min_length=1, description="Datos del solicitante en formato JSON (diccionario con datos de una o mÃ¡s personas)"),
     tipo_requerimiento: str = Form(..., min_length=1, description="Tipo de requerimiento"),
-    requerimiento: str = Form(..., min_length=1, description="Descripción del requerimiento"),
+    requerimiento: str = Form(..., min_length=1, description="DescripciÃ³n del requerimiento"),
     observaciones: str = Form(..., min_length=1, description="Observaciones adicionales"),
     coords: str = Form(..., description='Coordenadas GPS en formato GeoJSON Point: {"type": "Point", "coordinates": [lng, lat]}'),
     organismos_encargados: str = Form(..., description="Lista de nombres de centros gestores en formato JSON array"),
-    direccion: Optional[str] = Form(None, description="Dirección del requerimiento (texto)"),
+    direccion: Optional[str] = Form(None, description="DirecciÃ³n del requerimiento (texto)"),
     nota_voz: Optional[UploadFile] = File(None, description="Archivo de audio opcional"),
-    fotos: List[UploadFile] = File(default=[], description="Fotos/documentos adjuntos (múltiples archivos)")
+    fotos: List[UploadFile] = File(default=[], description="Fotos/documentos adjuntos (mÃºltiples archivos)")
 ):
     """
     Registrar un nuevo requerimiento con datos del solicitante y coordenadas GPS.
-    El barrio/vereda y comuna/corregimiento se determinan automáticamente por intersección geográfica.
+    El barrio/vereda y comuna/corregimiento se determinan automÃ¡ticamente por intersecciÃ³n geogrÃ¡fica.
     """
     try:
         # Parsear datos del solicitante
@@ -1956,11 +1963,11 @@ async def post_registrar_requerimiento(
             if not isinstance(datos_solicitante_dict, dict):
                 raise ValueError("datos_solicitante debe ser un diccionario JSON")
             if len(datos_solicitante_dict) == 0:
-                raise ValueError("datos_solicitante no puede estar vacío")
+                raise ValueError("datos_solicitante no puede estar vacÃ­o")
         except (json.JSONDecodeError, ValueError) as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Formato de datos_solicitante inválido. Debe ser un diccionario JSON no vacío: {str(e)}"
+                detail=f"Formato de datos_solicitante invÃ¡lido. Debe ser un diccionario JSON no vacÃ­o: {str(e)}"
             )
         
         # Parsear coordenadas GPS en formato GeoJSON Point
@@ -1978,9 +1985,9 @@ async def post_registrar_requerimiento(
             lat = float(coordinates[1])
             
             if not (-90 <= lat <= 90):
-                raise ValueError(f"Latitud inválida: {lat}. Debe estar entre -90 y 90")
+                raise ValueError(f"Latitud invÃ¡lida: {lat}. Debe estar entre -90 y 90")
             if not (-180 <= lng <= 180):
-                raise ValueError(f"Longitud inválida: {lng}. Debe estar entre -180 y 180")
+                raise ValueError(f"Longitud invÃ¡lida: {lng}. Debe estar entre -180 y 180")
             
             # Normalizar coords con valores validados
             coords_dict = {"type": "Point", "coordinates": [lng, lat]}
@@ -1988,10 +1995,10 @@ async def post_registrar_requerimiento(
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
             raise HTTPException(
                 status_code=400,
-                detail=f'Formato de coords inválido. Debe ser GeoJSON Point: {{"type": "Point", "coordinates": [lng, lat]}}. Error: {str(e)}'
+                detail=f'Formato de coords invÃ¡lido. Debe ser GeoJSON Point: {{"type": "Point", "coordinates": [lng, lat]}}. Error: {str(e)}'
             )
         
-        # Geolocalización automática: intersección con basemaps
+        # GeolocalizaciÃ³n automÃ¡tica: intersecciÃ³n con basemaps
         geo_result = geolocate_point(lng, lat)
         barrio_vereda = geo_result["barrio_vereda"]
         comuna_corregimiento = geo_result["comuna_corregimiento"]
@@ -2005,7 +2012,7 @@ async def post_registrar_requerimiento(
         except (json.JSONDecodeError, ValueError) as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Formato de organismos_encargados inválido. Debe ser un JSON array: {str(e)}"
+                detail=f"Formato de organismos_encargados invÃ¡lido. Debe ser un JSON array: {str(e)}"
             )
         
         # Generar RID con consecutivo incremental dentro de cada visita
@@ -2022,7 +2029,7 @@ async def post_registrar_requerimiento(
             rid = f"REQ-{new_rid_number}"
             
         except Exception as e:
-            print(f"❌ Error generando RID: {str(e)}")
+            print(f"âŒ Error generando RID: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error generando RID: {str(e)}"
@@ -2046,7 +2053,7 @@ async def post_registrar_requerimiento(
                 
                 # Comprimir con gzip para ahorrar espacio en S3
                 compressed_content = gzip.compress(audio_content)
-                print(f"📦 Compresión: {len(audio_content)} bytes → {len(compressed_content)} bytes ({100 - len(compressed_content)*100//len(audio_content)}% ahorro)")
+                print(f"ðŸ“¦ CompresiÃ³n: {len(audio_content)} bytes â†’ {len(compressed_content)} bytes ({100 - len(compressed_content)*100//len(audio_content)}% ahorro)")
                 
                 s3_client = get_s3_client()
                 bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
@@ -2060,10 +2067,10 @@ async def post_registrar_requerimiento(
                 )
                 
                 nota_voz_url = f"https://{bucket_name}.s3.amazonaws.com/{audio_filename}"
-                print(f"✅ Nota de voz subida a S3: {nota_voz_url}")
+                print(f"âœ… Nota de voz subida a S3: {nota_voz_url}")
                 
             except Exception as e:
-                print(f"⚠️ Advertencia: Error subiendo nota de voz: {str(e)}")
+                print(f"âš ï¸ Advertencia: Error subiendo nota de voz: {str(e)}")
 
         # Procesar fotos/documentos adjuntos
         documentos_urls = []
@@ -2076,25 +2083,25 @@ async def post_registrar_requerimiento(
                     ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
                     ".pdf", ".gif", ".bmp", ".tiff", ".tif",
                 }
-                print(f"📎 Recibidas {len(fotos)} fotos/documentos para {vid}/{rid}")
+                print(f"ðŸ“Ž Recibidas {len(fotos)} fotos/documentos para {vid}/{rid}")
                 for i, foto in enumerate(fotos):
                     if not foto or not foto.filename:
-                        print(f"  ⏭️ foto[{i}]: sin archivo o nombre vacío, omitido")
+                        print(f"  â­ï¸ foto[{i}]: sin archivo o nombre vacÃ­o, omitido")
                         continue
-                    # Determinar content_type real: preferir extensión del archivo
+                    # Determinar content_type real: preferir extensiÃ³n del archivo
                     ext = os.path.splitext(foto.filename)[1].lower()
                     guessed_type, _ = mimetypes.guess_type(foto.filename)
                     content_type = foto.content_type
                     if content_type in (None, "", "application/octet-stream") and guessed_type:
                         content_type = guessed_type
-                    print(f"  📄 foto[{i}]: {foto.filename} | ext={ext} | content_type_original={foto.content_type} | content_type_final={content_type}")
-                    # Validar por extensión (más confiable que content_type del cliente)
+                    print(f"  ðŸ“„ foto[{i}]: {foto.filename} | ext={ext} | content_type_original={foto.content_type} | content_type_final={content_type}")
+                    # Validar por extensiÃ³n (mÃ¡s confiable que content_type del cliente)
                     if ext not in allowed_extensions:
-                        print(f"  ⚠️ Extensión no permitida, omitido: {foto.filename} (ext={ext})")
+                        print(f"  âš ï¸ ExtensiÃ³n no permitida, omitido: {foto.filename} (ext={ext})")
                         continue
                     file_content = await foto.read()
                     if len(file_content) == 0:
-                        print(f"  ⏭️ foto[{i}]: archivo vacío (0 bytes), omitido")
+                        print(f"  â­ï¸ foto[{i}]: archivo vacÃ­o (0 bytes), omitido")
                         continue
                     safe_name = re.sub(r'[^\w.\-]', '_', foto.filename)
                     s3_key = f"requerimientos/{vid}/{rid}/{uuid.uuid4().hex}_{safe_name}"
@@ -2107,16 +2114,16 @@ async def post_registrar_requerimiento(
                         "s3_url": f"https://{bucket_name_fotos}.s3.amazonaws.com/{s3_key}",
                         "content_type": content_type or "application/octet-stream", "size": len(file_content),
                     })
-                    print(f"  ✅ Documento subido a S3: {s3_key} ({len(file_content)} bytes)")
+                    print(f"  âœ… Documento subido a S3: {s3_key} ({len(file_content)} bytes)")
             except Exception as e:
                 import traceback
-                print(f"⚠️ Error subiendo fotos/documentos: {str(e)}")
+                print(f"âš ï¸ Error subiendo fotos/documentos: {str(e)}")
                 traceback.print_exc()
 
         # Capturar fecha y hora de registro
-        fecha_registro = datetime.utcnow()
+        fecha_registro = now_colombia()
         
-        # Crear ID único para el documento
+        # Crear ID Ãºnico para el documento
         doc_id = f"{vid}_{rid}"
         
         # Preparar datos para guardar en Firebase
@@ -2139,16 +2146,16 @@ async def post_registrar_requerimiento(
                               for d in documentos_urls],
             "fecha_registro": fecha_registro.isoformat(),
             "organismos_encargados": organismos_list,
-            "created_at": datetime.utcnow().isoformat(),
-            "timestamp": datetime.utcnow().isoformat()
+            "created_at": now_colombia().isoformat(),
+            "timestamp": now_colombia().isoformat()
         }
         
         # Guardar en Firebase
         try:
             db.collection('requerimientos').document(doc_id).set(requerimiento_data)
-            print(f"✅ Requerimiento {rid} para visita {vid} guardado en Firebase")
+            print(f"âœ… Requerimiento {rid} para visita {vid} guardado en Firebase")
         except Exception as e:
-            print(f"❌ Error guardando en Firebase: {str(e)}")
+            print(f"âŒ Error guardando en Firebase: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en Firebase: {str(e)}"
@@ -2172,7 +2179,7 @@ async def post_registrar_requerimiento(
             documentos_urls=documentos_urls if documentos_urls else None,
             fecha_registro=fecha_registro.isoformat(),
             organismos_encargados=organismos_list,
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=now_colombia().isoformat()
         )
         
     except HTTPException:
@@ -2187,17 +2194,17 @@ async def post_registrar_requerimiento(
 # ==================== ENDPOINT: Obtener Requerimientos ====================#
 @router.get(
     "/obtener-requerimientos",
-    summary="🔵 GET | Obtener Requerimientos",
+    summary="ðŸ”µ GET | Obtener Requerimientos",
     description="""
-## 🔵 GET | Obtener Requerimientos
+## ðŸ”µ GET | Obtener Requerimientos
 
-**Propósito**: Obtener todos los requerimientos registrados en la colección "requerimientos".
+**PropÃ³sito**: Obtener todos los requerimientos registrados en la colecciÃ³n "requerimientos".
 Se puede filtrar opcionalmente por VID (visita).
 
-### 📥 Parámetros opcionales:
+### ðŸ“¥ ParÃ¡metros opcionales:
 - **vid**: Filtrar requerimientos por ID de visita (ej: VID-1)
 
-### 📝 Ejemplo de uso:
+### ðŸ“ Ejemplo de uso:
 ```javascript
 // Todos los requerimientos
 const response = await fetch('/obtener-requerimientos');
@@ -2206,7 +2213,7 @@ const response = await fetch('/obtener-requerimientos');
 const response = await fetch('/obtener-requerimientos?vid=VID-1');
 ```
 
-### ✅ Respuesta exitosa:
+### âœ… Respuesta exitosa:
 ```json
 {
     "success": true,
@@ -2218,7 +2225,7 @@ const response = await fetch('/obtener-requerimientos?vid=VID-1');
             "rid": "REQ-1",
             "datos_solicitante": {...},
             "requerimiento": "Solicitud de mejoramiento vial",
-            "observaciones": "Vía en mal estado",
+            "observaciones": "VÃ­a en mal estado",
             "barrio_vereda": "San Pedro",
             "comuna_corregimiento": "COMUNA 03",
             "coords": {"type": "Point", "coordinates": [-76.532, 3.4516]},
@@ -2236,7 +2243,7 @@ async def obtener_requerimientos(
     vid: Optional[str] = Query(None, description="Filtrar por ID de visita (ej: VID-1)")
 ):
     """
-    Obtener todos los requerimientos de la colección 'requerimientos'.
+    Obtener todos los requerimientos de la colecciÃ³n 'requerimientos'.
     Incluye documentos_con_enlaces con URLs presignadas de S3 para cada requerimiento.
     """
     try:
@@ -2252,7 +2259,7 @@ async def obtener_requerimientos(
         try:
             s3_client = get_s3_client()
         except Exception as e:
-            print(f"⚠️ No se pudo crear cliente S3 para URLs presignadas: {e}")
+            print(f"âš ï¸ No se pudo crear cliente S3 para URLs presignadas: {e}")
 
         requerimientos = []
         for doc in docs:

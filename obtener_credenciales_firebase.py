@@ -137,7 +137,7 @@ def main():
     # AWS S3 (Opcional)
     AWS_ACCESS_KEY_ID=tu_key
     AWS_SECRET_ACCESS_KEY=tu_secret
-    AWS_REGION=us-east-1
+    AWS_REGION=us-east-2
     S3_BUCKET_NAME=360-dagma-photos
     
     # API Config
