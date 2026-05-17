@@ -24,6 +24,12 @@ shapely==2.0.2
 # Whisper local (transcripción de audio gratuita)
 faster-whisper>=1.0.0
 
+# Clasificador local de centros gestores (SLM gratuito multilingüe)
+# Rama de reglas léxicas funciona sin estas libs; rama de embeddings las requiere.
+sentence-transformers>=2.7.0
+# torch CPU (Railway / Linux x86_64). En local Windows, pip resolverá la wheel CPU adecuada.
+torch>=2.1.0,<3
+
 # Utilidades
 python-dotenv==1.0.0
 httpx==0.27.0

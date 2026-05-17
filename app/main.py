@@ -139,6 +139,17 @@ app.include_router(artefacto_360_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(seguimiento_routes.router)
 
+# Pre-carga opcional del modelo SLM de clasificación de centros gestores.
+# Activar con la env var CLASSIFIER_PRELOAD=true (recomendado en Railway con
+# volumen montado en /app/.cache/huggingface para evitar la descarga en cold-start).
+@app.on_event("startup")
+async def _precargar_clasificador():
+    try:
+        from app.classification.embeddings import precargar
+        precargar()  # respeta CLASSIFIER_PRELOAD; no-op si está desactivado
+    except Exception as e:
+        logger.warning(f"⚠️ Preload del clasificador falló (continuando): {e}")
+
 # Manejador de errores global
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):

@@ -24,6 +24,9 @@ import boto3
 from botocore.exceptions import ClientError
 from botocore.config import Config as BotoConfig
 
+# Clasificador automático de centros gestores (organismos_encargados)
+from app.classification import clasificar_centros_gestores
+
 
 # ==================== WHISPER TRANSCRIPCIÓN (LOCAL, GRATUITO) ====================
 _whisper_model = None
@@ -951,6 +954,8 @@ class RegistroRequerimientoResponse(BaseModel):
     documentos_urls: Optional[List[dict]] = None
     fecha_registro: str
     organismos_encargados: List[str]
+    organismos_encargados_origen: Optional[str] = None  # "cliente" | "auto"
+    clasificacion_meta: Optional[dict] = None
     timestamp: str
 
 
@@ -2000,7 +2005,15 @@ async def post_registrar_requerimiento(
     requerimiento: str = Form(..., min_length=1, description="Descripción del requerimiento"),
     observaciones: str = Form(..., min_length=1, description="Observaciones adicionales"),
     coords: str = Form(..., description='Coordenadas GPS en formato GeoJSON Point: {"type": "Point", "coordinates": [lng, lat]}'),
-    organismos_encargados: str = Form(..., description="Lista de nombres de centros gestores en formato JSON array"),
+    organismos_encargados: Optional[str] = Form(
+        None,
+        description=(
+            "Lista de nombres de centros gestores en formato JSON array. "
+            "OPCIONAL: si se omite o llega como '[]', el backend infiere automáticamente "
+            "los centros gestores a partir del texto del requerimiento. "
+            "Si se envía con contenido, se respeta tal cual sin sobrescribir."
+        ),
+    ),
     direccion: Optional[str] = Form(None, description="Dirección del requerimiento (texto)"),
     nota_voz: Optional[UploadFile] = File(None, description="Archivo de audio opcional"),
     fotos: List[UploadFile] = File(default=[], description="Fotos/documentos adjuntos (múltiples archivos)")
@@ -2022,6 +2035,22 @@ async def post_registrar_requerimiento(
                 status_code=400,
                 detail=f"Formato de datos_solicitante inválido. Debe ser un diccionario JSON no vacío: {str(e)}"
             )
+
+        # Compat: el schema antiguo permitía `centro_gestor` dentro de cada persona
+        # del solicitante. El centro gestor ahora se infiere del texto (campo
+        # `organismos_encargados` a nivel raíz), así que se elimina silenciosamente
+        # para no romper clientes viejos.
+        try:
+            personas = datos_solicitante_dict.get("personas")
+            if isinstance(personas, list):
+                removidos = 0
+                for persona in personas:
+                    if isinstance(persona, dict) and persona.pop("centro_gestor", None) is not None:
+                        removidos += 1
+                if removidos:
+                    print(f"⚠️ Compat: removidos {removidos} 'centro_gestor' obsoletos de datos_solicitante.personas")
+        except Exception:
+            pass
         
         # Parsear coordenadas GPS en formato GeoJSON Point
         try:
@@ -2056,17 +2085,21 @@ async def post_registrar_requerimiento(
         barrio_vereda = geo_result["barrio_vereda"]
         comuna_corregimiento = geo_result["comuna_corregimiento"]
         
-        # Parsear organismos encargados
-        try:
-            organismos_list = json.loads(organismos_encargados)
-            if not isinstance(organismos_list, list):
-                raise ValueError("organismos_encargados debe ser un array")
-            organismos_list = [str(org) for org in organismos_list]
-        except (json.JSONDecodeError, ValueError) as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Formato de organismos_encargados inválido. Debe ser un JSON array: {str(e)}"
-            )
+        # Parsear organismos encargados (opcional: si viene vacío o ausente se infiere)
+        organismos_list: List[str] = []
+        organismos_origen = "cliente"
+        clasificacion_meta: Optional[dict] = None
+        if organismos_encargados:
+            try:
+                _parsed = json.loads(organismos_encargados)
+                if not isinstance(_parsed, list):
+                    raise ValueError("organismos_encargados debe ser un array")
+                organismos_list = [str(org).strip() for org in _parsed if str(org).strip()]
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Formato de organismos_encargados inválido. Debe ser un JSON array: {str(e)}"
+                )
         
         # Generar RID con consecutivo incremental dentro de cada visita
         try:
@@ -2188,7 +2221,34 @@ async def post_registrar_requerimiento(
         
         # Crear ID único para el documento
         doc_id = f"{vid}_{rid}"
-        
+
+        # Clasificación automática de centros gestores cuando el cliente NO envió ninguno.
+        # Si el cliente envió `organismos_encargados` con contenido, se respeta sin sobrescribir.
+        if not organismos_list:
+            try:
+                clasif = clasificar_centros_gestores(
+                    requerimiento=requerimiento,
+                    tipo_requerimiento=tipo_requerimiento,
+                    observaciones=observaciones,
+                    transcripciones=transcripciones if transcripciones else None,
+                )
+                organismos_list = list(clasif.get("centros_gestores", []) or [])
+                organismos_origen = "auto"
+                clasificacion_meta = {
+                    "metodo": clasif.get("metodo"),
+                    "confianza": clasif.get("confianza"),
+                    "matches": clasif.get("matches", []),
+                }
+                print(
+                    f"🧠 Clasificación automática: {organismos_list} "
+                    f"(método={clasificacion_meta['metodo']}, conf={clasificacion_meta['confianza']})"
+                )
+            except Exception as _e_clasif:
+                print(f"⚠️ Clasificador falló, se guarda organismos_encargados=[]: {_e_clasif}")
+                organismos_list = []
+                organismos_origen = "auto"
+                clasificacion_meta = {"metodo": "error", "confianza": 0.0, "matches": []}
+
         # Preparar datos para guardar en Firebase
         requerimiento_data = {
             "vid": vid,
@@ -2210,6 +2270,8 @@ async def post_registrar_requerimiento(
                               for d in documentos_urls],
             "fecha_registro": fecha_registro.isoformat(),
             "organismos_encargados": organismos_list,
+            "organismos_encargados_origen": organismos_origen,
+            "clasificacion_meta": clasificacion_meta,
             "created_at": now_colombia().isoformat(),
             "timestamp": now_colombia().isoformat()
         }
@@ -2244,6 +2306,8 @@ async def post_registrar_requerimiento(
             documentos_urls=documentos_urls if documentos_urls else None,
             fecha_registro=fecha_registro.isoformat(),
             organismos_encargados=organismos_list,
+            organismos_encargados_origen=organismos_origen,
+            clasificacion_meta=clasificacion_meta,
             timestamp=now_colombia().isoformat()
         )
         
@@ -2254,6 +2318,37 @@ async def post_registrar_requerimiento(
             status_code=500,
             detail=f"Error registrando requerimiento: {str(e)}"
         )
+
+
+# ==================== ENDPOINT: Clasificar Requerimiento (preview) ====================#
+class ClasificarRequerimientoRequest(BaseModel):
+    texto: str = Field(..., description="Texto principal del requerimiento")
+    tipo_requerimiento: Optional[str] = Field(None, description="Tipo de requerimiento (opcional)")
+    observaciones: Optional[str] = Field(None, description="Observaciones adicionales (opcional)")
+    top_k: int = Field(3, ge=1, le=10, description="Cantidad máxima de candidatos a devolver")
+
+
+@router.post(
+    "/clasificar-requerimiento",
+    summary="🟢 POST | Clasificar Requerimiento (preview)",
+    description=(
+        "Devuelve una sugerencia de **centros gestores** (`organismos_encargados`) "
+        "para un texto dado, sin persistir nada. Útil para previsualizar la "
+        "clasificación automática que aplicará `/registrar-requerimiento` "
+        "cuando el cliente no envíe `organismos_encargados`."
+    ),
+)
+async def post_clasificar_requerimiento(body: ClasificarRequerimientoRequest):
+    try:
+        resultado = clasificar_centros_gestores(
+            requerimiento=body.texto,
+            tipo_requerimiento=body.tipo_requerimiento,
+            observaciones=body.observaciones,
+            top_k=body.top_k,
+        )
+        return {"success": True, **resultado}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error clasificando: {str(e)}")
 
 
 # ==================== ENDPOINT: Obtener Requerimientos ====================#

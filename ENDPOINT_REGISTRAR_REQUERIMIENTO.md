@@ -6,6 +6,17 @@ El endpoint `POST /registrar-requerimiento` permite registrar nuevos requerimien
 
 El sistema determina automáticamente el **barrio/vereda** y la **comuna/corregimiento** mediante intersección geográfica del punto GPS con los basemaps locales (shapely).
 
+> 🧠 **Novedad (v2.1)**: el campo `organismos_encargados` ahora es **opcional**.
+> Si se omite o llega como `"[]"`, el backend infiere automáticamente los
+> centros gestores a partir del texto del requerimiento usando un SLM local
+> (reglas léxicas + embeddings multilingües). La respuesta incluye los
+> nuevos campos `organismos_encargados_origen` (`"cliente" | "auto"`) y
+> `clasificacion_meta` (método, confianza y matches).
+>
+> 🚫 **Deprecado**: el campo `centro_gestor` dentro de `datos_solicitante.personas[]`
+> se ignora silenciosamente. Los ciudadanos no pertenecen a un centro gestor;
+> el centro gestor se infiere del requerimiento.
+
 ---
 
 ## 🔗 URL del Endpoint
@@ -27,13 +38,13 @@ POST /registrar-requerimiento
 | `requerimiento`         | string              | Descripción del requerimiento              | `"Solicitud de mejoramiento vial"`                          |
 | `observaciones`         | string              | Observaciones adicionales                  | `"Vía en mal estado"`                                       |
 | `coords`                | string (GeoJSON)    | Coordenadas GPS en formato GeoJSON Point   | `{"type": "Point", "coordinates": [-76.5320, 3.4516]}`      |
-| `organismos_encargados` | string (JSON Array) | Lista de organismos encargados             | `["DAGMA", "Secretaría de Obras"]`                          |
 
 ### Campos Opcionales
 
-| Campo      | Tipo | Descripción                                 |
-| ---------- | ---- | ------------------------------------------- |
-| `nota_voz` | File | Archivo de audio (MP3, WAV, OGG, WEBM, M4A) |
+| Campo                   | Tipo                | Descripción                                                                                                                                              | Ejemplo                            |
+| ----------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `organismos_encargados` | string (JSON Array) | Lista de centros gestores. **Si se omite o llega vacío**, el backend los infiere automáticamente del texto del requerimiento.                              | `["DAGMA", "Secretaría de Obras"]` |
+| `nota_voz`              | File                | Archivo de audio (MP3, WAV, OGG, WEBM, M4A)                                                                                                                |                                    |
 
 ### Campos Auto-calculados (no se envían)
 
