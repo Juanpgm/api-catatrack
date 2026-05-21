@@ -31,6 +31,8 @@ CASOS_DIRECTOS = [
     ("Colchón botado en el andén", {"UAESP"}),
     ("Pasto crecido en zona verde sin mantenimiento", {"UAESP"}),
     ("Cambuche de habitante de calle en el parque", {"Bienestar Social", "SSJ", "UAESP"}),
+    ("Hay un poste a punto de caerse, le falta concreto en la base", {"UAESP", "EMCALI"}),
+    ("El poste en mal estado frente al parque es peligroso", {"UAESP", "EMCALI"}),
     ("Ruido excesivo en el bar de la esquina toda la noche", {"SSJ", "Policía", "DAGMA"}),
     ("Música alta del vecino de al lado", {"SSJ", "Policía"}),
     ("Vendedor ambulante ocupando el andén", {"SSJ", "Desarrollo Económico", "Salud"}),
@@ -123,3 +125,63 @@ def test_reglas_devuelven_score_descendente():
     )
     scores = [c["score"] for c in candidatos]
     assert scores == sorted(scores, reverse=True)
+
+
+# ---------- Tipo de requerimiento y acciones por organismo ----------
+
+def test_tipo_y_acciones_para_poda():
+    """Frase de poda debe derivar tipo 'Poda de árboles' y acciones por organismo."""
+    res = clasificar_centros_gestores("Solicito poda normal del árbol del parque")
+    assert res["tipo_requerimiento"] == "Poda de árboles"
+    assert isinstance(res["acciones_por_organismo"], dict)
+    assert len(res["acciones_por_organismo"]) >= 1
+    # Cada organismo presente en centros_gestores debe estar en acciones_por_organismo
+    for org in res["centros_gestores"]:
+        assert org in res["acciones_por_organismo"]
+        assert isinstance(res["acciones_por_organismo"][org], list)
+
+
+def test_tipo_alumbrado_publico():
+    """Frase de luminaria apagada debe derivar tipo 'Alumbrado público'."""
+    res = clasificar_centros_gestores("Luminaria apagada hace 3 días en el poste de la esquina")
+    assert res["tipo_requerimiento"] == "Alumbrado público"
+    assert res["acciones_por_organismo"]  # no vacío
+
+
+def test_tipo_emergencias_arboreas():
+    """Árbol caído / emergencia arbórea."""
+    res = clasificar_centros_gestores("Se cayó un árbol grande en la cuadra y bloquea el paso")
+    assert res["tipo_requerimiento"] == "Emergencias arbóreas"
+
+
+def test_tipo_recoleccion_residuos():
+    """No pasa el carro de la basura → recolección de residuos sólidos."""
+    res = clasificar_centros_gestores("No pasa el carro de la basura desde hace una semana")
+    assert res["tipo_requerimiento"] == "Recolección de residuos sólidos"
+
+
+def test_tipo_otros_cuando_no_hay_match():
+    """Sin match → tipo 'Otros' y acciones vacías."""
+    res = clasificar_centros_gestores("xkjsdh wqe rty zzz random gibberish 12345")
+    if res["metodo"] == "ninguno":
+        assert res["tipo_requerimiento"] == "Otros"
+        assert res["acciones_por_organismo"] == {}
+
+
+def test_matches_incluyen_accion():
+    """Cada match del clasificador por reglas debe incluir la clave 'accion'."""
+    res = clasificar_centros_gestores("Luminaria apagada en el parque")
+    assert res["matches"]
+    for m in res["matches"]:
+        assert "accion" in m
+
+
+def test_acciones_deduplicadas_por_organismo():
+    """Las acciones por organismo no deben tener duplicados."""
+    res = clasificar_centros_gestores(
+        "Luminaria apagada en el poste, el poste también está apagado y la luminaria no sirve"
+    )
+    for org, acciones in res["acciones_por_organismo"].items():
+        assert len(acciones) == len(set(acciones)), (
+            f"Acciones duplicadas para {org}: {acciones}"
+        )

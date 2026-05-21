@@ -2,7 +2,7 @@
 Rutas para gestión de Artefacto de Captura DAGMA
 """
 from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Body
-from typing import List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, timezone, timedelta
 import json
 import re
@@ -955,6 +955,8 @@ class RegistroRequerimientoResponse(BaseModel):
     fecha_registro: str
     organismos_encargados: List[str]
     organismos_encargados_origen: Optional[str] = None  # "cliente" | "auto"
+    tipo_requerimiento_origen: Optional[str] = None  # "cliente" | "auto"
+    acciones_por_organismo: Optional[Dict[str, List[str]]] = None
     clasificacion_meta: Optional[dict] = None
     timestamp: str
 
@@ -2001,7 +2003,13 @@ const response = await fetch('/registrar-requerimiento', {
 async def post_registrar_requerimiento(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
     datos_solicitante: str = Form(..., min_length=1, description="Datos del solicitante en formato JSON (diccionario con datos de una o más personas)"),
-    tipo_requerimiento: str = Form(..., min_length=1, description="Tipo de requerimiento"),
+    tipo_requerimiento: Optional[str] = Form(
+        None,
+        description=(
+            "Tipo de requerimiento. OPCIONAL: si se omite o llega vacío, el backend "
+            "lo infiere automáticamente a partir del texto del requerimiento."
+        ),
+    ),
     requerimiento: str = Form(..., min_length=1, description="Descripción del requerimiento"),
     observaciones: str = Form(..., min_length=1, description="Observaciones adicionales"),
     coords: str = Form(..., description='Coordenadas GPS en formato GeoJSON Point: {"type": "Point", "coordinates": [lng, lat]}'),
@@ -2222,32 +2230,43 @@ async def post_registrar_requerimiento(
         # Crear ID único para el documento
         doc_id = f"{vid}_{rid}"
 
-        # Clasificación automática de centros gestores cuando el cliente NO envió ninguno.
-        # Si el cliente envió `organismos_encargados` con contenido, se respeta sin sobrescribir.
-        if not organismos_list:
-            try:
-                clasif = clasificar_centros_gestores(
-                    requerimiento=requerimiento,
-                    tipo_requerimiento=tipo_requerimiento,
-                    observaciones=observaciones,
-                    transcripciones=transcripciones if transcripciones else None,
-                )
+        # Clasificación automática: siempre se ejecuta para derivar
+        # `tipo_requerimiento` y `acciones_por_organismo`. Los `organismos_encargados`
+        # solo se sobreescriben cuando el cliente NO envió ninguno.
+        tipo_requerimiento_input = (tipo_requerimiento or "").strip()
+        tipo_requerimiento_final = tipo_requerimiento_input
+        tipo_requerimiento_origen = "cliente" if tipo_requerimiento_input else "auto"
+        acciones_por_organismo: Dict[str, List[str]] = {}
+        try:
+            clasif = clasificar_centros_gestores(
+                requerimiento=requerimiento,
+                tipo_requerimiento=tipo_requerimiento_input or None,
+                observaciones=observaciones,
+                transcripciones=transcripciones if transcripciones else None,
+            )
+            clasificacion_meta = {
+                "metodo": clasif.get("metodo"),
+                "confianza": clasif.get("confianza"),
+                "matches": clasif.get("matches", []),
+            }
+            acciones_por_organismo = dict(clasif.get("acciones_por_organismo", {}) or {})
+            if not tipo_requerimiento_final:
+                tipo_requerimiento_final = clasif.get("tipo_requerimiento") or "Otros"
+            if not organismos_list:
                 organismos_list = list(clasif.get("centros_gestores", []) or [])
                 organismos_origen = "auto"
-                clasificacion_meta = {
-                    "metodo": clasif.get("metodo"),
-                    "confianza": clasif.get("confianza"),
-                    "matches": clasif.get("matches", []),
-                }
-                print(
-                    f"🧠 Clasificación automática: {organismos_list} "
-                    f"(método={clasificacion_meta['metodo']}, conf={clasificacion_meta['confianza']})"
-                )
-            except Exception as _e_clasif:
-                print(f"⚠️ Clasificador falló, se guarda organismos_encargados=[]: {_e_clasif}")
-                organismos_list = []
+            print(
+                f"🧠 Clasificación: organismos={organismos_list} "
+                f"tipo='{tipo_requerimiento_final}' (origen_tipo={tipo_requerimiento_origen}) "
+                f"(método={clasificacion_meta['metodo']}, conf={clasificacion_meta['confianza']})"
+            )
+        except Exception as _e_clasif:
+            print(f"⚠️ Clasificador falló: {_e_clasif}")
+            clasificacion_meta = {"metodo": "error", "confianza": 0.0, "matches": []}
+            if not organismos_list:
                 organismos_origen = "auto"
-                clasificacion_meta = {"metodo": "error", "confianza": 0.0, "matches": []}
+            if not tipo_requerimiento_final:
+                tipo_requerimiento_final = "Otros"
 
         # Preparar datos para guardar en Firebase
         requerimiento_data = {
@@ -2255,7 +2274,8 @@ async def post_registrar_requerimiento(
             "rid": rid,
             "rid_number": new_rid_number,
             "datos_solicitante": datos_solicitante_dict,
-            "tipo_requerimiento": tipo_requerimiento,
+            "tipo_requerimiento": tipo_requerimiento_final,
+            "tipo_requerimiento_origen": tipo_requerimiento_origen,
             "requerimiento": requerimiento,
             "observaciones": observaciones,
             "direccion": direccion,
@@ -2271,6 +2291,7 @@ async def post_registrar_requerimiento(
             "fecha_registro": fecha_registro.isoformat(),
             "organismos_encargados": organismos_list,
             "organismos_encargados_origen": organismos_origen,
+            "acciones_por_organismo": acciones_por_organismo,
             "clasificacion_meta": clasificacion_meta,
             "created_at": now_colombia().isoformat(),
             "timestamp": now_colombia().isoformat()
@@ -2293,7 +2314,7 @@ async def post_registrar_requerimiento(
             rid=rid,
             message="Requerimiento registrado exitosamente",
             datos_solicitante=datos_solicitante_dict,
-            tipo_requerimiento=tipo_requerimiento,
+            tipo_requerimiento=tipo_requerimiento_final,
             requerimiento=requerimiento,
             observaciones=observaciones,
             direccion=direccion,
@@ -2307,6 +2328,8 @@ async def post_registrar_requerimiento(
             fecha_registro=fecha_registro.isoformat(),
             organismos_encargados=organismos_list,
             organismos_encargados_origen=organismos_origen,
+            tipo_requerimiento_origen=tipo_requerimiento_origen,
+            acciones_por_organismo=acciones_por_organismo,
             clasificacion_meta=clasificacion_meta,
             timestamp=now_colombia().isoformat()
         )

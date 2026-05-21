@@ -26,7 +26,8 @@ _RAW: List = [
     ("DAGMA", "Árboles", "Emergencia arbórea", "Árbol enfermo", "Atención prioritaria",
      ["arbol enfermo", "arbol enferma", "enfermedad arbol", "arbol con plaga", "arbol podrido", "arbol marchito"]),
     ("DAGMA", "Árboles", "Emergencia arbórea", "Árbol caído/volcado", "Atención prioritaria",
-     ["arbol caido", "arbol volcado", "se cayo un arbol", "arbol tumbado", "arbol derribado", "arbol en el suelo"]),
+     ["arbol caido", "arbol volcado", "se cayo un arbol", "arbol tumbado", "arbol derribado", "arbol en el suelo",
+      "arbol a punto de caerse", "arbol a punto de caer"]),
     ("DAGMA", "Árboles", "Emergencia arbórea", "Ramas grandes caídas", "Atención prioritaria",
      ["rama caida", "ramas caidas", "rama grande", "se cayo una rama", "ramas en la via", "rama partida"]),
     ("DAGMA", "Árboles", "Emergencia arbórea", "Árbol notable", "Evaluación especializada",
@@ -82,7 +83,10 @@ _RAW: List = [
     ("UAESP / EMCALI", "Alumbrado público", "Luminaria", "Luminaria apagada", "Reparación",
      ["luminaria", "luminaria apagada", "lampara apagada", "alumbrado apagado", "no hay luz en la calle", "poste sin luz", "luz publica dañada", "bombillo poste"]),
     ("UAESP / EMCALI", "Alumbrado público", "Poste", "Poste dañado", "Reposición e iluminación",
-     ["poste dañado", "poste caido", "poste roto", "poste inclinado", "poste partido"]),
+     ["poste dañado", "poste caido", "poste roto", "poste inclinado", "poste partido",
+      "poste a punto de caerse", "poste a punto de caer", "poste se va a caer", "poste que se cae",
+      "poste peligroso", "poste en peligro", "poste en mal estado", "poste deteriorado",
+      "base del poste", "base poste", "falta concreto", "sin concreto", "poste sin base"]),
     ("UAESP / EMCALI", "Alumbrado público", "Modernización", "Cambio a LED", "Actualización",
      ["cambio a led", "modernizar alumbrado", "actualizar luminaria", "led publico"]),
     ("UAESP", "Alumbrado público", "Luces ornamentales", "Daño ornamental", "Mantenimiento",
@@ -151,6 +155,67 @@ TAXONOMIA: List[Dict] = [
 
 
 RESPONSABLES_CONOCIDOS = sorted({r for fila in TAXONOMIA for r in fila["responsables"]})
+
+
+# ---------------------------------------------------------------------------
+# Mapeo categoría/subcategoría -> "Tipo de Requerimiento" mostrado en el
+# frontend (los 13 valores del antiguo dropdown). Se utiliza para derivar el
+# tipo de requerimiento a partir del resultado del clasificador.
+# ---------------------------------------------------------------------------
+
+TIPOS_REQUERIMIENTO_FRONT: List[str] = [
+    "Poda de árboles",
+    "Arbustos",
+    "Emergencias arbóreas",
+    "Siembra indiscriminada",
+    "Recolección de residuos sólidos",
+    "Barrido y limpieza de vías y espacio público",
+    "Alumbrado público",
+    "Acueducto y alcantarillado",
+    "Habitantes de calle",
+    "Invasión de espacio público",
+    "Ruido",
+    "Movilidad",
+    "Otros",
+]
+
+
+# Reglas de mapeo: (categoria, subcategoria|None) -> tipo_front.
+# Si `subcategoria` es None, aplica a cualquier subcategoría de esa categoría.
+_TIPO_RULES = [
+    ("Árboles", "Poda de árboles", "Poda de árboles"),
+    ("Árboles", "Emergencia arbórea", "Emergencias arbóreas"),
+    ("Árboles", None, "Emergencias arbóreas"),
+    ("Arbustos", None, "Arbustos"),
+    ("Siembra indiscriminada", None, "Siembra indiscriminada"),
+    ("Recolección basuras", None, "Recolección de residuos sólidos"),
+    ("Limpieza pública", None, "Barrido y limpieza de vías y espacio público"),
+    ("Alumbrado público", None, "Alumbrado público"),
+    ("Acueducto y alcantarillado", None, "Acueducto y alcantarillado"),
+    ("Habitante de calle", None, "Habitantes de calle"),
+    ("Invasión espacio público", None, "Invasión de espacio público"),
+    ("Ruido", None, "Ruido"),
+    ("Movilidad", None, "Movilidad"),
+    ("Otros", None, "Otros"),
+]
+
+
+def mapear_tipo_requerimiento_front(categoria: str, subcategoria: str = "") -> str:
+    """
+    Devuelve uno de `TIPOS_REQUERIMIENTO_FRONT` a partir de la categoría y
+    subcategoría de la taxonomía. Fallback: `"Otros"`.
+    """
+    if not categoria:
+        return "Otros"
+    # Pasada 1: match exacto categoria + subcategoria.
+    for cat, sub, tipo in _TIPO_RULES:
+        if cat == categoria and sub is not None and sub == subcategoria:
+            return tipo
+    # Pasada 2: match por categoría con regla genérica (sub=None).
+    for cat, sub, tipo in _TIPO_RULES:
+        if cat == categoria and sub is None:
+            return tipo
+    return "Otros"
 
 
 def listar_descripciones_canonicas() -> List[str]:
