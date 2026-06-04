@@ -28,6 +28,8 @@ class ViaInfo(BaseModel):
     nombre_catastral: Optional[str] = None
     clase: Optional[str] = None
     distancia_m: Optional[float] = None
+    soporte_cruces: Optional[int] = None
+    inferida: Optional[bool] = None
 
 
 class CruceInfo(BaseModel):
@@ -38,6 +40,12 @@ class CruceInfo(BaseModel):
 class Coordenada(BaseModel):
     lat: float
     lon: float
+
+
+class VerificacionInfo(BaseModel):
+    score: int
+    nivel: str
+    advertencias: list[str] = []
 
 
 class ReverseGeocodeResponse(BaseModel):
@@ -52,6 +60,7 @@ class ReverseGeocodeResponse(BaseModel):
     direccion_osm: Optional[str] = None
     osm: Optional[dict] = None
     fuentes: list[str]
+    verificacion: Optional[VerificacionInfo] = None
 
 
 @router.post(
