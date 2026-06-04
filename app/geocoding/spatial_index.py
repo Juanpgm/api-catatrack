@@ -155,11 +155,11 @@ def _dist_a_polygon_m(polygon, lon: float, lat: float) -> float:
 
 def barrio_de_robusto(lon: float, lat: float, margen_borde_m: float = 60.0) -> dict:
     """
-    Asignación robusta de barrio:
-    - Si un polígono contiene el punto, lo devuelve como 'primario'.
-    - Si está cerca del borde (< margen), devuelve también el 'vecino' más cercano.
-    - Si no está dentro de ningún polígono, devuelve el más cercano como primario.
-    Retorna: {'primario': nombre|None, 'vecino': nombre|None, 'dist_borde_m': float|None}
+    Asignación robusta de barrio por intersección geográfica + vecindad:
+    - 'primario': polígono que CONTIENE el punto (verdad catastral local).
+    - 'vecinos': lista de polígonos cercanos (≤ margen_borde_m * 5), ordenados por distancia.
+    - 'dist_borde_m': distancia del punto al borde del polígono primario.
+    Si no hay primario, busca el más cercano dentro de 200m.
     """
     pt = Point(lon, lat)
     primario: Optional[str] = None
@@ -172,19 +172,24 @@ def barrio_de_robusto(lon: float, lat: float, margen_borde_m: float = 60.0) -> d
 
     if primario_poly is not None:
         dist_borde = _dist_a_boundary_m(primario_poly, lon, lat)
-        vecino = None
-        if dist_borde < margen_borde_m:
-            # Buscar el polígono vecino más cercano (distinto del primario)
-            mejor = (float("inf"), None)
-            for polygon, name in _BARRIOS_POLYGONS:
-                if name == primario:
-                    continue
-                d = _dist_a_polygon_m(polygon, lon, lat)
-                if d < mejor[0]:
-                    mejor = (d, name)
-            if mejor[1] and mejor[0] < margen_borde_m * 3:
-                vecino = mejor[1]
-        return {"primario": primario, "vecino": vecino, "dist_borde_m": round(dist_borde, 2)}
+        # Lista de vecinos cercanos para reconciliación con fuentes externas
+        candidatos: list[tuple[float, str]] = []
+        radio_busqueda = max(margen_borde_m * 5, 200.0)
+        for polygon, name in _BARRIOS_POLYGONS:
+            if name == primario:
+                continue
+            d = _dist_a_polygon_m(polygon, lon, lat)
+            if d <= radio_busqueda:
+                candidatos.append((d, name))
+        candidatos.sort()
+        vecinos = [{"nombre": n, "distancia_m": round(d, 2)} for d, n in candidatos[:5]]
+        vecino_inmediato = vecinos[0]["nombre"] if (vecinos and candidatos[0][0] < margen_borde_m * 3) else None
+        return {
+            "primario": primario,
+            "vecino": vecino_inmediato,
+            "vecinos": vecinos,
+            "dist_borde_m": round(dist_borde, 2),
+        }
 
     # Sin contenedor → nearest (solo si está razonablemente cerca, < 200m)
     mejor = (float("inf"), None)
@@ -193,8 +198,13 @@ def barrio_de_robusto(lon: float, lat: float, margen_borde_m: float = 60.0) -> d
         if d < mejor[0]:
             mejor = (d, name)
     if mejor[0] > 200.0:
-        return {"primario": None, "vecino": None, "dist_borde_m": round(mejor[0], 2)}
-    return {"primario": mejor[1], "vecino": None, "dist_borde_m": round(mejor[0], 2)}
+        return {"primario": None, "vecino": None, "vecinos": [], "dist_borde_m": round(mejor[0], 2)}
+    return {
+        "primario": mejor[1],
+        "vecino": None,
+        "vecinos": [{"nombre": mejor[1], "distancia_m": round(mejor[0], 2)}] if mejor[1] else [],
+        "dist_borde_m": round(mejor[0], 2),
+    }
 
 
 def comuna_de_robusto(lon: float, lat: float, margen_borde_m: float = 80.0) -> dict:
@@ -210,18 +220,23 @@ def comuna_de_robusto(lon: float, lat: float, margen_borde_m: float = 80.0) -> d
 
     if primario_poly is not None:
         dist_borde = _dist_a_boundary_m(primario_poly, lon, lat)
-        vecino = None
-        if dist_borde < margen_borde_m:
-            mejor = (float("inf"), None)
-            for polygon, name in _COMUNAS_POLYGONS:
-                if name == primario:
-                    continue
-                d = _dist_a_polygon_m(polygon, lon, lat)
-                if d < mejor[0]:
-                    mejor = (d, name)
-            if mejor[1] and mejor[0] < margen_borde_m * 3:
-                vecino = mejor[1]
-        return {"primario": primario, "vecino": vecino, "dist_borde_m": round(dist_borde, 2)}
+        candidatos: list[tuple[float, str]] = []
+        radio_busqueda = max(margen_borde_m * 5, 300.0)
+        for polygon, name in _COMUNAS_POLYGONS:
+            if name == primario:
+                continue
+            d = _dist_a_polygon_m(polygon, lon, lat)
+            if d <= radio_busqueda:
+                candidatos.append((d, name))
+        candidatos.sort()
+        vecinos = [{"nombre": n, "distancia_m": round(d, 2)} for d, n in candidatos[:5]]
+        vecino_inmediato = vecinos[0]["nombre"] if (vecinos and candidatos[0][0] < margen_borde_m * 3) else None
+        return {
+            "primario": primario,
+            "vecino": vecino_inmediato,
+            "vecinos": vecinos,
+            "dist_borde_m": round(dist_borde, 2),
+        }
 
     mejor = (float("inf"), None)
     for polygon, name in _COMUNAS_POLYGONS:
@@ -229,8 +244,13 @@ def comuna_de_robusto(lon: float, lat: float, margen_borde_m: float = 80.0) -> d
         if d < mejor[0]:
             mejor = (d, name)
     if mejor[0] > 500.0:
-        return {"primario": None, "vecino": None, "dist_borde_m": round(mejor[0], 2)}
-    return {"primario": mejor[1], "vecino": None, "dist_borde_m": round(mejor[0], 2)}
+        return {"primario": None, "vecino": None, "vecinos": [], "dist_borde_m": round(mejor[0], 2)}
+    return {
+        "primario": mejor[1],
+        "vecino": None,
+        "vecinos": [{"nombre": mejor[1], "distancia_m": round(mejor[0], 2)}] if mejor[1] else [],
+        "dist_borde_m": round(mejor[0], 2),
+    }
 
 
 def via_mas_cercana(lon: float, lat: float, max_m: float = 80.0) -> Optional[dict]:

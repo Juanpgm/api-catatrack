@@ -82,24 +82,3 @@ async def get_firebase_collections_summary():
         raise HTTPException(status_code=500, detail=f"Error obteniendo resumen: {str(e)}")
 
 
-@router.get("/obtener_directorio_contactos")
-async def obtener_directorio_contactos():
-    """
-    🔵 GET | Obtener todos los contactos del directorio desde la colección 'directorio_contactos'
-    """
-    try:
-        docs = db.collection("directorio_contactos").stream()
-        contactos = []
-        for doc in docs:
-            data = doc.to_dict()
-            data["id"] = doc.id
-            contactos.append(data)
-        return {
-            "success": True,
-            "total": len(contactos),
-            "contactos": contactos,
-            "timestamp": now_colombia().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error obteniendo directorio de contactos: {str(e)}")
-

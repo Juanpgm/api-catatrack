@@ -363,3 +363,20 @@ Si tienes problemas con la configuración:
 
 **Última actualización:** 2026-02-04  
 **Proyecto:** API Artefacto 360 DAGMA
+
+
+## Web Push (VAPID) � iOS 16.4+ PWA notifications
+
+Required for the /push/* endpoints. Generate one key pair per environment:
+
+`ash
+python -c "from py_vapid import Vapid01; v=Vapid01(); v.generate_keys(); v.save_key('priv.pem'); print('PUB', v.public_key_as_base64()); print('PRIV', v.private_key_as_base64())"
+`
+
+| Variable           | Required | Description                                              |
+|--------------------|----------|----------------------------------------------------------|
+| VAPID_PUBLIC_KEY   | yes      | Base64url ECDSA P-256 public key                         |
+| VAPID_PRIVATE_KEY  | yes      | Base64url ECDSA P-256 private key                        |
+| VAPID_SUBJECT      | yes      | mailto:contact@... or https://app-url                    |
+
+Keep VAPID_PRIVATE_KEY in your secret manager (Railway secret, not in repo).

@@ -39,18 +39,6 @@ class ColaboradorOut(BaseModel):
     centro_gestor: str
 
 
-class EnlaceOut(BaseModel):
-    id: str
-    nombre: str
-    email: str
-    telefono: str
-    cargo: str
-    centro_gestor_id: str
-    centro_gestor_nombre: str
-    dependencia: Optional[str] = None
-    activo: bool
-
-
 class SolicitanteModel(BaseModel):
     id: Optional[str] = None
     nombre_completo: str
@@ -94,8 +82,6 @@ class RequerimientoOut(BaseModel):
     evidencia_fotos: List[str] = []
     estado: str
     encargado: Optional[str] = None
-    enlace_id: Optional[str] = None
-    enlace_nombre: Optional[str] = None
     fecha_propuesta_solucion: Optional[str] = None
     porcentaje_avance: int = 0
     prioridad: str = "media"
@@ -162,11 +148,6 @@ class CambiarEstadoBody(BaseModel):
 
 class AsignarEncargadoBody(BaseModel):
     encargado: str
-
-
-class AsignarEnlaceBody(BaseModel):
-    enlace_id: str
-    enlace_nombre: str
 
 
 # ==================== DATOS INICIALES (Catálogos) ====================
@@ -428,8 +409,6 @@ async def crear_requerimiento(
             "evidencia_fotos": body.evidencia_fotos,
             "estado": "nuevo",
             "encargado": None,
-            "enlace_id": None,
-            "enlace_nombre": None,
             "fecha_propuesta_solucion": None,
             "porcentaje_avance": 0,
             "prioridad": body.prioridad,
@@ -548,70 +527,4 @@ async def asignar_encargado(
         raise HTTPException(status_code=500, detail=f"Error asignando encargado: {str(e)}")
 
 
-@router.patch(
-    "/requerimientos/{req_id}/enlace",
-    summary="📋 PATCH | Asignar enlace a requerimiento",
-    response_model=RequerimientoOut,
-)
-async def asignar_enlace(
-    req_id: str,
-    body: AsignarEnlaceBody,
-    current_user: dict = Depends(get_current_user),
-):
-    """
-    Asigna un enlace del organismo a un requerimiento.
-    """
-    try:
-        doc_ref = db.collection("requerimientos_seguimiento").document(req_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            raise HTTPException(status_code=404, detail=f"Requerimiento {req_id} no encontrado")
-
-        now = now_colombia().isoformat()
-        doc_ref.update({
-            "enlace_id": body.enlace_id,
-            "enlace_nombre": body.enlace_nombre,
-            "updated_at": now,
-        })
-
-        data = doc.to_dict() or {}
-        data["id"] = req_id
-        data["enlace_id"] = body.enlace_id
-        data["enlace_nombre"] = body.enlace_nombre
-        data["updated_at"] = now
-        return data
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error asignando enlace: {str(e)}")
-
-
-# ==================== ENLACES ====================
-
-@router.get(
-    "/enlaces",
-    summary="📇 GET | Directorio de enlaces",
-    response_model=List[EnlaceOut],
-)
-async def get_enlaces(
-    centro_gestor_id: Optional[str] = Query(None, description="Filtrar por centro gestor"),
-    activo: Optional[bool] = Query(None, description="Filtrar por estado activo"),
-    current_user: dict = Depends(get_current_user),
-):
-    """
-    Obtiene el directorio de representantes/enlaces por organismo desde Firestore.
-    """
-    try:
-        query = db.collection("enlaces").order_by("nombre")
-        docs = list(query.stream())
-        result = [_doc_to_dict(d) for d in docs]
-
-        if centro_gestor_id:
-            result = [e for e in result if e.get("centro_gestor_id") == centro_gestor_id]
-        if activo is not None:
-            result = [e for e in result if e.get("activo") == activo]
-
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error obteniendo enlaces: {str(e)}")
 

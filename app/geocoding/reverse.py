@@ -161,9 +161,11 @@ def _lookup_local_cached(lat_q: float, lon_q: float) -> dict:
     return {
         "barrio": barrio_info["primario"],
         "barrio_vecino": barrio_info["vecino"],
+        "barrio_vecinos": barrio_info.get("vecinos", []),
         "barrio_dist_borde_m": barrio_info["dist_borde_m"],
         "comuna": comuna_info["primario"],
         "comuna_vecino": comuna_info["vecino"],
+        "comuna_vecinos": comuna_info.get("vecinos", []),
         "comuna_dist_borde_m": comuna_info["dist_borde_m"],
         "via": via,
         "cruce": cruce,
@@ -185,57 +187,68 @@ def _normalizar_comuna_osm(osm_name: Optional[str]) -> Optional[str]:
     return s
 
 
+def _norm(s: Optional[str]) -> str:
+    """Normaliza para comparar nombres (case + trim)."""
+    return (s or "").strip().lower()
+
+
 def _reconciliar_barrio(local: dict, osm: Optional[dict]) -> tuple[Optional[str], str]:
     """
-    Decide el barrio final combinando local + OSM.
-    Reglas:
-    - Si OSM coincide con primario local → primario (fuente: local+osm).
-    - Si OSM coincide con vecino local → vecino (fuente: osm_corrige_borde).
-    - Si OSM no coincide y primario está cerca del borde → OSM (fuente: osm).
-    - Si OSM no coincide y primario está bien dentro → primario (fuente: local).
-    - Sin OSM → primario o vecino local (fuente: local).
-    Retorna (nombre, fuente).
+    Asignación final de barrio combinando intersección geográfica local + OSM.
+    Estricto: SOLO acepta el nombre de OSM si geográficamente coincide con
+    alguno de los polígonos candidatos cercanos (primario o vecinos).
+    Esto evita que OSM imponga nombres arbitrarios sin respaldo geográfico.
     """
     primario = local.get("barrio")
-    vecino = local.get("barrio_vecino")
+    vecinos: list[dict] = local.get("barrio_vecinos") or []
     dist_borde = local.get("barrio_dist_borde_m") or 0
     osm_barrio = (osm or {}).get("suburb")
 
     if not osm_barrio:
         return primario, "local"
 
-    def _eq(a: Optional[str], b: Optional[str]) -> bool:
-        return bool(a and b and a.strip().lower() == b.strip().lower())
+    osm_n = _norm(osm_barrio)
 
-    if _eq(osm_barrio, primario):
+    # Caso 1: OSM coincide con el polígono primario → ambos están de acuerdo
+    if osm_n == _norm(primario):
         return primario, "local+osm"
-    if _eq(osm_barrio, vecino):
-        return vecino, "osm_corrige_borde"
-    # OSM dice algo distinto; confiar en OSM si estamos cerca del borde o sin contenedor
-    if dist_borde < 60.0:
-        return osm_barrio, "osm"
-    # Estamos bien dentro del polígono local → mantener local pero registrar discrepancia
+
+    # Caso 2: OSM coincide con algún vecino geográficamente cercano → corregir borde
+    for v in vecinos:
+        if osm_n == _norm(v["nombre"]):
+            # Solo aceptar la corrección si el punto está cerca del borde del primario
+            # Y el vecino está geográficamente al alcance (< 100m)
+            if dist_borde < 80.0 and v["distancia_m"] < 100.0:
+                return v["nombre"], "osm_corrige_borde"
+            break
+
+    # Caso 3: OSM dice un nombre que NO está entre los polígonos cercanos →
+    # NO confiamos en OSM (puede ser un nombre alternativo, un sector, una
+    # división informal que no existe en el catastro). Mantenemos local.
     return primario, "local"
 
 
 def _reconciliar_comuna(local: dict, osm: Optional[dict]) -> tuple[Optional[str], str]:
+    """Misma lógica estricta para comunas."""
     primario = local.get("comuna")
-    vecino = local.get("comuna_vecino")
+    vecinos: list[dict] = local.get("comuna_vecinos") or []
     dist_borde = local.get("comuna_dist_borde_m") or 0
     osm_comuna = _normalizar_comuna_osm((osm or {}).get("city_district"))
 
     if not osm_comuna:
         return primario, "local"
 
-    def _eq(a: Optional[str], b: Optional[str]) -> bool:
-        return bool(a and b and a.strip().upper() == b.strip().upper())
+    osm_n = _norm(osm_comuna)
 
-    if _eq(osm_comuna, primario):
+    if osm_n == _norm(primario):
         return primario, "local+osm"
-    if _eq(osm_comuna, vecino):
-        return vecino, "osm_corrige_borde"
-    if dist_borde < 80.0:
-        return osm_comuna, "osm"
+
+    for v in vecinos:
+        if osm_n == _norm(v["nombre"]):
+            if dist_borde < 100.0 and v["distancia_m"] < 150.0:
+                return v["nombre"], "osm_corrige_borde"
+            break
+
     return primario, "local"
 
 
@@ -265,7 +278,7 @@ async def reverse_geocode(
         if nominatim:
             fuentes.append("nominatim")
 
-    # Reconciliación: OSM puede corregir polígonos catastrales desactualizados
+    # Reconciliación estricta: OSM solo corrige si coincide con un polígono vecino real
     barrio_final, fuente_barrio = _reconciliar_barrio(local, nominatim)
     comuna_final, fuente_comuna = _reconciliar_comuna(local, nominatim)
 
@@ -288,11 +301,13 @@ async def reverse_geocode(
         "asignacion": {
             "barrio_fuente": fuente_barrio,
             "barrio_local": local.get("barrio"),
-            "barrio_local_vecino": local.get("barrio_vecino"),
+            "barrio_local_vecinos": local.get("barrio_vecinos"),
             "barrio_dist_borde_m": local.get("barrio_dist_borde_m"),
+            "barrio_osm": (nominatim or {}).get("suburb"),
             "comuna_fuente": fuente_comuna,
             "comuna_local": local.get("comuna"),
-            "comuna_local_vecino": local.get("comuna_vecino"),
+            "comuna_local_vecinos": local.get("comuna_vecinos"),
             "comuna_dist_borde_m": local.get("comuna_dist_borde_m"),
+            "comuna_osm": _normalizar_comuna_osm((nominatim or {}).get("city_district")),
         },
     }
