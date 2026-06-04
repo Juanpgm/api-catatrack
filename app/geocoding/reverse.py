@@ -62,6 +62,49 @@ async def _nominatim_reverse(lat: float, lon: float, timeout: float = 5.0) -> Op
             return None
 
 
+# Mapeo nombre completo → abreviatura catastral usada en los nombres de cruce
+_TIPO_VIA_ABREV: dict[str, str] = {
+    "carrera": "KR",
+    "calle": "CL",
+    "diagonal": "DG",
+    "transversal": "TV",
+    "autopista": "AK",
+    "avenida": "AV",
+    "circular": "CR",
+    "via": "VIA",
+}
+
+
+def _via_abrev(tipo: str, numero: str) -> str:
+    """Construye la forma abreviada catastral. 'Carrera', '1' → 'KR 1'."""
+    abrev = _TIPO_VIA_ABREV.get((tipo or "").lower().strip(), "")
+    num = (numero or "").strip()
+    if abrev and num:
+        return f"{abrev} {num}"
+    return ""
+
+
+def _cross_num_from_cruce(cruce_nombre: str, via_abrev: str) -> Optional[str]:
+    """
+    De 'KR 1 con CL 8' y via_abrev='KR 1' extrae '8' (número de la transversal).
+    Devuelve None si no puede resolverlo o el cruce no pasa por la via.
+    """
+    if not cruce_nombre or not via_abrev:
+        return None
+    parts = [p.strip() for p in cruce_nombre.split(" con ")]
+    if len(parts) != 2:
+        return None
+    via_norm = via_abrev.upper()
+    for part in parts:
+        if part.upper() == via_norm:
+            continue  # esta es la via principal, buscar la otra
+        # Extraer número de la transversal: ['CL', '8'] → '8'; ['KR', '8A'] → '8A'
+        tokens = part.split()
+        if len(tokens) >= 2:
+            return " ".join(tokens[1:])
+    return None
+
+
 def _componer_direccion(
     via: Optional[dict],
     cruce: Optional[dict],
@@ -69,25 +112,42 @@ def _componer_direccion(
     comuna: Optional[str],
     nominatim: Optional[dict],
 ) -> str:
-    """Compone una dirección legible priorizando basemaps locales."""
+    """
+    Compone una dirección en formato colombiano estándar:
+    'Carrera 1 #8-37, barrio La Merced, COMUNA 03, Cali, Valle del Cauca, Colombia'
+    """
     partes: list[str] = []
+
     if via and via.get("nombre"):
-        partes.append(via["nombre"])
-    if cruce and cruce.get("nombre"):
-        partes.append(f"cerca de {cruce['nombre']}")
-    elif not via and nominatim and nominatim.get("road"):
+        via_str = via["nombre"]
+        abrev = _via_abrev(via.get("tipo") or "", via.get("numero") or "")
+
+        if cruce and cruce.get("nombre"):
+            cross_num = _cross_num_from_cruce(cruce["nombre"], abrev)
+            dist_m = int(round(cruce.get("distancia_m") or 0))
+            if cross_num and abrev:
+                partes.append(f"{via_str} #{cross_num}-{dist_m}")
+            else:
+                # Fallback si el cruce no está en la via principal
+                partes.append(f"{via_str} cerca de {cruce['nombre']}")
+        else:
+            partes.append(via_str)
+    elif cruce and cruce.get("nombre"):
+        partes.append(cruce["nombre"])
+    elif nominatim and nominatim.get("road"):
         partes.append(nominatim["road"])
 
     contexto: list[str] = []
     if barrio:
         b = barrio.strip()
-        contexto.append(b if b.lower().startswith("barrio") else f"Barrio {b}")
+        label = b if b.lower().startswith("barrio") else f"barrio {b}"
+        contexto.append(label)
     if comuna:
         contexto.append(comuna)
-    contexto.append("Cali")
+    contexto.extend(["Cali", "Valle del Cauca", "Colombia"])
 
     if partes:
-        return f"{' '.join(partes)}, {', '.join(contexto)}"
+        return f"{', '.join(partes)}, {', '.join(contexto)}"
     return ", ".join(contexto)
 
 
