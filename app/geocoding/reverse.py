@@ -154,11 +154,89 @@ def _componer_direccion(
 # Cache LRU por coordenada cuantizada (~1 m). Guarda solo la parte local (rápida).
 @lru_cache(maxsize=2048)
 def _lookup_local_cached(lat_q: float, lon_q: float) -> dict:
-    barrio = si.barrio_de(lon_q, lat_q)
-    comuna = si.comuna_de(lon_q, lat_q)
+    barrio_info = si.barrio_de_robusto(lon_q, lat_q)
+    comuna_info = si.comuna_de_robusto(lon_q, lat_q)
     via = si.via_mas_cercana(lon_q, lat_q)
     cruce = si.cruce_mas_cercano(lon_q, lat_q)
-    return {"barrio": barrio, "comuna": comuna, "via": via, "cruce": cruce}
+    return {
+        "barrio": barrio_info["primario"],
+        "barrio_vecino": barrio_info["vecino"],
+        "barrio_dist_borde_m": barrio_info["dist_borde_m"],
+        "comuna": comuna_info["primario"],
+        "comuna_vecino": comuna_info["vecino"],
+        "comuna_dist_borde_m": comuna_info["dist_borde_m"],
+        "via": via,
+        "cruce": cruce,
+    }
+
+
+# Normalización Nominatim → formato catastral local
+def _normalizar_comuna_osm(osm_name: Optional[str]) -> Optional[str]:
+    """'Comuna 3' → 'COMUNA 03'; 'Comuna 15' → 'COMUNA 15'; pasa corregimientos intactos."""
+    if not osm_name:
+        return None
+    s = osm_name.strip()
+    low = s.lower()
+    if low.startswith("comuna "):
+        num = s.split(" ", 1)[1].strip()
+        if num.isdigit():
+            return f"COMUNA {int(num):02d}"
+        return f"COMUNA {num.upper()}"
+    return s
+
+
+def _reconciliar_barrio(local: dict, osm: Optional[dict]) -> tuple[Optional[str], str]:
+    """
+    Decide el barrio final combinando local + OSM.
+    Reglas:
+    - Si OSM coincide con primario local → primario (fuente: local+osm).
+    - Si OSM coincide con vecino local → vecino (fuente: osm_corrige_borde).
+    - Si OSM no coincide y primario está cerca del borde → OSM (fuente: osm).
+    - Si OSM no coincide y primario está bien dentro → primario (fuente: local).
+    - Sin OSM → primario o vecino local (fuente: local).
+    Retorna (nombre, fuente).
+    """
+    primario = local.get("barrio")
+    vecino = local.get("barrio_vecino")
+    dist_borde = local.get("barrio_dist_borde_m") or 0
+    osm_barrio = (osm or {}).get("suburb")
+
+    if not osm_barrio:
+        return primario, "local"
+
+    def _eq(a: Optional[str], b: Optional[str]) -> bool:
+        return bool(a and b and a.strip().lower() == b.strip().lower())
+
+    if _eq(osm_barrio, primario):
+        return primario, "local+osm"
+    if _eq(osm_barrio, vecino):
+        return vecino, "osm_corrige_borde"
+    # OSM dice algo distinto; confiar en OSM si estamos cerca del borde o sin contenedor
+    if dist_borde < 60.0:
+        return osm_barrio, "osm"
+    # Estamos bien dentro del polígono local → mantener local pero registrar discrepancia
+    return primario, "local"
+
+
+def _reconciliar_comuna(local: dict, osm: Optional[dict]) -> tuple[Optional[str], str]:
+    primario = local.get("comuna")
+    vecino = local.get("comuna_vecino")
+    dist_borde = local.get("comuna_dist_borde_m") or 0
+    osm_comuna = _normalizar_comuna_osm((osm or {}).get("city_district"))
+
+    if not osm_comuna:
+        return primario, "local"
+
+    def _eq(a: Optional[str], b: Optional[str]) -> bool:
+        return bool(a and b and a.strip().upper() == b.strip().upper())
+
+    if _eq(osm_comuna, primario):
+        return primario, "local+osm"
+    if _eq(osm_comuna, vecino):
+        return vecino, "osm_corrige_borde"
+    if dist_borde < 80.0:
+        return osm_comuna, "osm"
+    return primario, "local"
 
 
 async def reverse_geocode(
@@ -187,20 +265,34 @@ async def reverse_geocode(
         if nominatim:
             fuentes.append("nominatim")
 
+    # Reconciliación: OSM puede corregir polígonos catastrales desactualizados
+    barrio_final, fuente_barrio = _reconciliar_barrio(local, nominatim)
+    comuna_final, fuente_comuna = _reconciliar_comuna(local, nominatim)
+
     direccion_legible = _componer_direccion(
-        local["via"], local["cruce"], local["barrio"], local["comuna"], nominatim
+        local["via"], local["cruce"], barrio_final, comuna_final, nominatim
     )
 
     return {
         "success": True,
         "coordenada": {"lat": lat, "lon": lon},
         "dentro_de_cali": dentro_cali,
-        "barrio_vereda": local["barrio"],
-        "comuna_corregimiento": local["comuna"],
+        "barrio_vereda": barrio_final,
+        "comuna_corregimiento": comuna_final,
         "via": local["via"],
         "cruce_mas_cercano": local["cruce"],
         "direccion_legible": direccion_legible,
         "direccion_osm": (nominatim or {}).get("display_name"),
         "osm": nominatim,
         "fuentes": fuentes,
+        "asignacion": {
+            "barrio_fuente": fuente_barrio,
+            "barrio_local": local.get("barrio"),
+            "barrio_local_vecino": local.get("barrio_vecino"),
+            "barrio_dist_borde_m": local.get("barrio_dist_borde_m"),
+            "comuna_fuente": fuente_comuna,
+            "comuna_local": local.get("comuna"),
+            "comuna_local_vecino": local.get("comuna_vecino"),
+            "comuna_dist_borde_m": local.get("comuna_dist_borde_m"),
+        },
     }

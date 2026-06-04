@@ -136,6 +136,103 @@ def comuna_de(lon: float, lat: float) -> Optional[str]:
     return None
 
 
+def _dist_a_boundary_m(polygon, lon: float, lat: float) -> float:
+    """Distancia (m) del punto al borde más cercano del polígono."""
+    try:
+        nearest_pt = polygon.boundary.interpolate(polygon.boundary.project(Point(lon, lat)))
+        return _haversine_m(lon, lat, nearest_pt.x, nearest_pt.y)
+    except Exception:
+        return float("inf")
+
+
+def _dist_a_polygon_m(polygon, lon: float, lat: float) -> float:
+    """Distancia (m) del punto al polígono (0 si está dentro)."""
+    pt = Point(lon, lat)
+    if polygon.contains(pt):
+        return 0.0
+    return _dist_a_boundary_m(polygon, lon, lat)
+
+
+def barrio_de_robusto(lon: float, lat: float, margen_borde_m: float = 60.0) -> dict:
+    """
+    Asignación robusta de barrio:
+    - Si un polígono contiene el punto, lo devuelve como 'primario'.
+    - Si está cerca del borde (< margen), devuelve también el 'vecino' más cercano.
+    - Si no está dentro de ningún polígono, devuelve el más cercano como primario.
+    Retorna: {'primario': nombre|None, 'vecino': nombre|None, 'dist_borde_m': float|None}
+    """
+    pt = Point(lon, lat)
+    primario: Optional[str] = None
+    primario_poly = None
+    for polygon, name in _BARRIOS_POLYGONS:
+        if polygon.contains(pt):
+            primario = name
+            primario_poly = polygon
+            break
+
+    if primario_poly is not None:
+        dist_borde = _dist_a_boundary_m(primario_poly, lon, lat)
+        vecino = None
+        if dist_borde < margen_borde_m:
+            # Buscar el polígono vecino más cercano (distinto del primario)
+            mejor = (float("inf"), None)
+            for polygon, name in _BARRIOS_POLYGONS:
+                if name == primario:
+                    continue
+                d = _dist_a_polygon_m(polygon, lon, lat)
+                if d < mejor[0]:
+                    mejor = (d, name)
+            if mejor[1] and mejor[0] < margen_borde_m * 3:
+                vecino = mejor[1]
+        return {"primario": primario, "vecino": vecino, "dist_borde_m": round(dist_borde, 2)}
+
+    # Sin contenedor → nearest (solo si está razonablemente cerca, < 200m)
+    mejor = (float("inf"), None)
+    for polygon, name in _BARRIOS_POLYGONS:
+        d = _dist_a_polygon_m(polygon, lon, lat)
+        if d < mejor[0]:
+            mejor = (d, name)
+    if mejor[0] > 200.0:
+        return {"primario": None, "vecino": None, "dist_borde_m": round(mejor[0], 2)}
+    return {"primario": mejor[1], "vecino": None, "dist_borde_m": round(mejor[0], 2)}
+
+
+def comuna_de_robusto(lon: float, lat: float, margen_borde_m: float = 80.0) -> dict:
+    """Versión robusta para comunas: mismo patrón que barrio_de_robusto."""
+    pt = Point(lon, lat)
+    primario: Optional[str] = None
+    primario_poly = None
+    for polygon, name in _COMUNAS_POLYGONS:
+        if polygon.contains(pt):
+            primario = name
+            primario_poly = polygon
+            break
+
+    if primario_poly is not None:
+        dist_borde = _dist_a_boundary_m(primario_poly, lon, lat)
+        vecino = None
+        if dist_borde < margen_borde_m:
+            mejor = (float("inf"), None)
+            for polygon, name in _COMUNAS_POLYGONS:
+                if name == primario:
+                    continue
+                d = _dist_a_polygon_m(polygon, lon, lat)
+                if d < mejor[0]:
+                    mejor = (d, name)
+            if mejor[1] and mejor[0] < margen_borde_m * 3:
+                vecino = mejor[1]
+        return {"primario": primario, "vecino": vecino, "dist_borde_m": round(dist_borde, 2)}
+
+    mejor = (float("inf"), None)
+    for polygon, name in _COMUNAS_POLYGONS:
+        d = _dist_a_polygon_m(polygon, lon, lat)
+        if d < mejor[0]:
+            mejor = (d, name)
+    if mejor[0] > 500.0:
+        return {"primario": None, "vecino": None, "dist_borde_m": round(mejor[0], 2)}
+    return {"primario": mejor[1], "vecino": None, "dist_borde_m": round(mejor[0], 2)}
+
+
 def via_mas_cercana(lon: float, lat: float, max_m: float = 80.0) -> Optional[dict]:
     """Devuelve {'tipo','numero','nombre','distancia_m'} o None si no hay dentro de max_m."""
     if _STREET_TREE is None:
@@ -176,6 +273,8 @@ def cruce_mas_cercano(lon: float, lat: float, max_m: float = 150.0) -> Optional[
 __all__ = [
     "barrio_de",
     "comuna_de",
+    "barrio_de_robusto",
+    "comuna_de_robusto",
     "via_mas_cercana",
     "cruce_mas_cercano",
     "_CALI_BBOX",
