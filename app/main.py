@@ -34,6 +34,8 @@ from app.routes import (
     artefacto_360_routes,
     auth_routes,
     seguimiento_routes,
+    push_routes,
+    geocoding_routes,
 )
 
 # Crear aplicación FastAPI
@@ -138,6 +140,8 @@ app.include_router(firebase_routes.router)
 app.include_router(artefacto_360_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(seguimiento_routes.router)
+app.include_router(push_routes.router)
+app.include_router(geocoding_routes.router)
 
 # Pre-carga opcional del modelo SLM de clasificación de centros gestores.
 # Activar con la env var CLASSIFIER_PRELOAD=true (recomendado en Railway con
