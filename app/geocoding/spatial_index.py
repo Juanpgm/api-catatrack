@@ -1,17 +1,16 @@
 """
 Índice espacial en memoria para reverse geocoding sobre los basemaps de Cali.
 
-Carga al importar:
-- Polígonos de barrios/veredas (point-in-polygon) — reutiliza el loader de
-  ``artefacto_360_routes`` para no duplicar memoria.
-- Polígonos de comunas/corregimientos (point-in-polygon).
-- LineStrings de ejes viales (nearest street) con ``shapely.strtree.STRtree``.
-- Points de cruces de ejes viales (nearest intersection) con ``STRtree``,
-  deduplicados por par no ordenado de calles.
+Basemaps utilizados (todos en ``api-catatrack/basemaps/``):
+- ``barrios_veredas.geojson`` — polígonos de barrios/veredas (point-in-polygon),
+  cargado por ``artefacto_360_routes`` y reutilizado aquí.
+- ``comunas_corregimientos.geojson`` — polígonos de comunas/corregimientos
+  (point-in-polygon), también reutilizado de ``artefacto_360_routes``.
+- ``cruces_ejes_viales.geojson`` — points de cruces (nearest + inferencia de vía),
+  indexados con ``shapely.strtree.STRtree`` y deduplicados por par no ordenado
+  de calles.
 
 Las distancias se calculan en metros con haversine puro (sin pyproj).
-El ranking interno usa distancia euclídea en grados escalada por cos(lat),
-que es monotónica equivalente para puntos cercanos.
 """
 from __future__ import annotations
 
@@ -20,7 +19,7 @@ import math
 import os
 from typing import Optional
 
-from shapely.geometry import LineString, Point, shape
+from shapely.geometry import Point, shape
 from shapely.strtree import STRtree
 
 # Reutilizar polígonos ya cargados por artefacto_360_routes para no duplicar memoria
@@ -46,28 +45,6 @@ def _haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
-
-
-def _load_lines(filepath: str) -> tuple[list[LineString], list[dict]]:
-    geoms: list[LineString] = []
-    props: list[dict] = []
-    full = os.path.join(_BASEMAPS_DIR, filepath)
-    try:
-        with open(full, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for feat in data.get("features", []):
-            try:
-                g = shape(feat["geometry"])
-                if g.is_empty:
-                    continue
-                geoms.append(g)
-                props.append(feat.get("properties", {}) or {})
-            except Exception:
-                continue
-        print(f"✅ Basemap '{filepath}' cargado: {len(geoms)} líneas")
-    except Exception as e:
-        print(f"⚠️ Error cargando basemap '{filepath}': {e}")
-    return geoms, props
 
 
 def _load_intersections(filepath: str) -> tuple[list[Point], list[str]]:
@@ -102,22 +79,10 @@ def _load_intersections(filepath: str) -> tuple[list[Point], list[str]]:
 
 
 # ==================== CARGA AL IMPORT ====================
-_STREET_GEOMS, _STREET_PROPS = _load_lines("pdt_nmc_nomenclatura_vial.geojson")
 _CRUCE_GEOMS, _CRUCE_NAMES = _load_intersections("cruces_ejes_viales.geojson")
 
 # STRtree para nearest queries O(log n)
-_STREET_TREE: Optional[STRtree] = STRtree(_STREET_GEOMS) if _STREET_GEOMS else None
 _CRUCE_TREE: Optional[STRtree] = STRtree(_CRUCE_GEOMS) if _CRUCE_GEOMS else None
-
-
-def _format_via(props: dict) -> str:
-    """Formatea una vía: 'Carrera 9 NORTE' (preferencia por nvtipovia + nvnumvia)."""
-    tipo = (props.get("nvtipovia") or "").strip()
-    num = (props.get("nvnumvia") or "").strip()
-    if tipo and num:
-        return f"{tipo} {num}"
-    # Fallback al nombre catastral abreviado
-    return (props.get("nvnmcvial") or "").strip()
 
 
 def barrio_de(lon: float, lat: float) -> Optional[str]:
@@ -253,29 +218,6 @@ def comuna_de_robusto(lon: float, lat: float, margen_borde_m: float = 80.0) -> d
     }
 
 
-def via_mas_cercana(lon: float, lat: float, max_m: float = 80.0) -> Optional[dict]:
-    """Devuelve {'tipo','numero','nombre','distancia_m'} o None si no hay dentro de max_m."""
-    if _STREET_TREE is None:
-        return None
-    pt = Point(lon, lat)
-    idx = _STREET_TREE.nearest(pt)
-    geom = _STREET_GEOMS[idx]
-    props = _STREET_PROPS[idx]
-    # Punto más cercano sobre la LineString
-    nearest_pt = geom.interpolate(geom.project(pt))
-    dist_m = _haversine_m(lon, lat, nearest_pt.x, nearest_pt.y)
-    if dist_m > max_m:
-        return None
-    return {
-        "tipo": (props.get("nvtipovia") or "").strip() or None,
-        "numero": (props.get("nvnumvia") or "").strip() or None,
-        "nombre": _format_via(props) or None,
-        "nombre_catastral": (props.get("nvnmcvial") or "").strip() or None,
-        "clase": (props.get("nvclasevia") or "").strip() or None,
-        "distancia_m": round(dist_m, 2),
-    }
-
-
 def cruce_mas_cercano(lon: float, lat: float, max_m: float = 150.0) -> Optional[dict]:
     """Devuelve {'nombre','distancia_m'} del cruce vial más cercano o None."""
     if _CRUCE_TREE is None:
@@ -289,13 +231,118 @@ def cruce_mas_cercano(lon: float, lat: float, max_m: float = 150.0) -> Optional[
     return {"nombre": _CRUCE_NAMES[idx], "distancia_m": round(dist_m, 2)}
 
 
+# ==================== INFERENCIA DE VÍA A PARTIR DE CRUCES ====================
+# Como única fuente vial disponible están los cruces (`cruces_ejes_viales.geojson`),
+# se infiere la vía dominante a partir de los nombres de los cruces cercanos.
+
+_ABREV_TO_TIPO: dict[str, str] = {
+    "KR": "Carrera",
+    "CL": "Calle",
+    "DG": "Diagonal",
+    "TV": "Transversal",
+    "AK": "Autopista",
+    "AV": "Avenida",
+    "CR": "Circular",
+    "VIA": "Vía",
+}
+
+
+def _parse_via_token(token: str) -> Optional[tuple[str, str, str]]:
+    """'CL 72A NORTE' → ('CL', '72A NORTE', 'Calle 72A NORTE')."""
+    parts = token.strip().split(None, 1)
+    if len(parts) != 2:
+        return None
+    abrev = parts[0].upper()
+    tipo = _ABREV_TO_TIPO.get(abrev)
+    if not tipo:
+        return None
+    num = parts[1].strip()
+    if not num:
+        return None
+    return abrev, num, f"{tipo} {num}"
+
+
+def _cruces_en_radio(lon: float, lat: float, max_m: float) -> list[tuple[int, float]]:
+    """Devuelve [(idx, distancia_m), ...] de cruces dentro de max_m, ordenados."""
+    if _CRUCE_TREE is None:
+        return []
+    pt = Point(lon, lat)
+    # Conversión aproximada a grados (overestima para coincidir con todos)
+    buffer_deg = (max_m / 111000.0) * 1.4
+    try:
+        idxs = list(_CRUCE_TREE.query(pt.buffer(buffer_deg)))
+    except Exception:
+        return []
+    out: list[tuple[int, float]] = []
+    for i in idxs:
+        g = _CRUCE_GEOMS[int(i)]
+        d = _haversine_m(lon, lat, g.x, g.y)
+        if d <= max_m:
+            out.append((int(i), d))
+    out.sort(key=lambda x: x[1])
+    return out
+
+
+def via_inferida_de_cruces(
+    lon: float,
+    lat: float,
+    k: int = 12,
+    max_m: float = 250.0,
+) -> Optional[dict]:
+    """
+    Infiere la vía dominante a partir de los nombres de cruces cercanos.
+
+    Cada cruce 'CL 72A con CL 72' aporta dos vías candidatas. Se rankea por:
+    1. Frecuencia (vías que aparecen en más cruces son las vías principales).
+    2. Menor distancia mínima al punto consultado.
+
+    Devuelve None si no hay cruces utilizables dentro de ``max_m`` o si los
+    nombres no son parseables.
+    """
+    vecinos = _cruces_en_radio(lon, lat, max_m)
+    if not vecinos:
+        return None
+    vecinos = vecinos[: max(k, 4)]
+
+    # token → lista de distancias a los cruces que lo mencionan
+    cand: dict[str, list[float]] = {}
+    for idx, d in vecinos:
+        for part in _CRUCE_NAMES[idx].split(" con "):
+            t = part.strip()
+            if not t or _parse_via_token(t) is None:
+                continue
+            cand.setdefault(t, []).append(d)
+    if not cand:
+        return None
+
+    def score(item: tuple[str, list[float]]) -> tuple[int, float]:
+        _, dists = item
+        return (-len(dists), min(dists))
+
+    best_token, best_dists = min(cand.items(), key=score)
+    parsed = _parse_via_token(best_token)
+    if parsed is None:
+        return None
+    abrev, num, nombre = parsed
+    return {
+        "tipo": _ABREV_TO_TIPO.get(abrev),
+        "numero": num,
+        "nombre": nombre,
+        "nombre_catastral": best_token,
+        "clase": None,
+        "distancia_m": round(min(best_dists), 2),
+        "soporte_cruces": len(best_dists),
+        "inferida": True,
+    }
+
+
 # Re-export útil
 __all__ = [
     "barrio_de",
     "comuna_de",
     "barrio_de_robusto",
     "comuna_de_robusto",
-    "via_mas_cercana",
+    "via_inferida_de_cruces",
     "cruce_mas_cercano",
     "_CALI_BBOX",
     "_dentro_de_cali",

@@ -108,31 +108,114 @@ def test_reverse_geocode_schema(mock_nominatim):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Test 4 — nearest via existe y tiene distancia razonable
+# Test 4 — vía (catastral o inferida) con distancia razonable
 # ──────────────────────────────────────────────────────────────────────────────
 @patch("app.geocoding.reverse._nominatim_reverse", new_callable=AsyncMock, return_value=None)
 def test_via_distancia_razonable(mock_nominatim):
-    """La vía más cercana al centro de Cali debe estar a menos de 200m."""
+    """La vía resuelta (catastral o inferida por cruces) en el centro de Cali
+    debe estar a menos de 250 m."""
     from app.geocoding.reverse import reverse_geocode
 
     result = _run(reverse_geocode(LAT_CALI, LON_CALI, usar_nominatim=False))
 
     via = result.get("via")
-    if via is None:
-        pytest.skip("No se encontró vía para estas coordenadas (puede ser zona sin cobertura)")
-
+    assert via is not None, (
+        "Se esperaba al menos una vía inferida desde cruces para el centro de Cali"
+    )
     dist = via.get("distancia_m", 99999)
-    assert dist < 200, f"Vía a {dist}m — demasiado lejos para el centro de Cali"
+    assert dist < 250, f"Vía a {dist}m — demasiado lejos para el centro de Cali"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Test 5 — spatial_index cargó los basemaps correctamente
+# Test 5 — spatial_index cargó los basemaps obligatorios
 # ──────────────────────────────────────────────────────────────────────────────
 def test_spatial_index_cargado():
-    """Los STRtree y listas de polígonos deben tener elementos > 0."""
+    """Barrios, comunas y cruces son los tres basemaps obligatorios. Las vías se
+    derivan por inferencia a partir de los cruces (no se distribuye un basemap
+    vial separado)."""
+    from app.geocoding import spatial_index as si
+    from app.routes.artefacto_360_routes import _BARRIOS_POLYGONS, _COMUNAS_POLYGONS
+
+    assert len(_BARRIOS_POLYGONS) > 0, "No se cargaron polígonos de barrios"
+    assert len(_COMUNAS_POLYGONS) > 0, "No se cargaron polígonos de comunas"
+    assert len(si._CRUCE_GEOMS) > 0, "No se cargaron cruces"
+    assert si._CRUCE_TREE is not None, "STRtree de cruces no inicializado"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Test 6 — inferencia de vía desde cruces (sin basemap vial catastral)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_via_inferida_de_cruces_funciona():
+    """`via_inferida_de_cruces` debe devolver un dict parseado para el centro de Cali."""
     from app.geocoding import spatial_index as si
 
-    assert len(si._STREET_GEOMS) > 0, "No se cargaron vías"
-    assert len(si._CRUCE_GEOMS) > 0, "No se cargaron cruces"
-    assert si._STREET_TREE is not None, "STRtree de vías no inicializado"
-    assert si._CRUCE_TREE is not None, "STRtree de cruces no inicializado"
+    via = si.via_inferida_de_cruces(LON_CALI, LAT_CALI)
+    assert via is not None, "Se esperaba vía inferida en el centro de Cali"
+    assert via["tipo"] in {
+        "Carrera", "Calle", "Diagonal", "Transversal",
+        "Autopista", "Avenida", "Circular", "Vía",
+    }, f"tipo inesperado: {via['tipo']}"
+    assert via["numero"], "numero vacío"
+    assert via.get("inferida") is True
+    assert isinstance(via.get("soporte_cruces"), int) and via["soporte_cruces"] >= 1
+    assert via["distancia_m"] <= 250
+
+
+def test_via_inferida_fuera_de_cali_es_none():
+    """Coordenada lejana sin cruces cercanos → None."""
+    from app.geocoding import spatial_index as si
+
+    assert si.via_inferida_de_cruces(LON_BOGOTA, LAT_BOGOTA) is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Test 7 — bloque `verificacion` en la respuesta
+# ──────────────────────────────────────────────────────────────────────────────
+@patch("app.geocoding.reverse._nominatim_reverse", new_callable=AsyncMock, return_value=None)
+def test_verificacion_estructura_y_score(mock_nominatim):
+    """La respuesta debe incluir `verificacion` con score, nivel, checks y advertencias."""
+    from app.geocoding.reverse import reverse_geocode
+
+    result = _run(reverse_geocode(LAT_CALI, LON_CALI, usar_nominatim=False))
+    v = result.get("verificacion")
+    assert v is not None, "Falta bloque `verificacion` en la respuesta"
+
+    assert set(v.keys()) >= {"score", "nivel", "checks", "advertencias"}
+    assert 0 <= v["score"] <= 100
+    assert v["nivel"] in {"alta", "media", "baja", "fuera_cali"}
+    assert isinstance(v["checks"], dict)
+    for nombre in (
+        "dentro_cali", "barrio_contenido", "comuna_contenida",
+        "via_disponible", "cruce_anclaje",
+        "osm_acuerdo_barrio", "osm_acuerdo_comuna",
+    ):
+        assert nombre in v["checks"], f"Falta check '{nombre}'"
+        assert "ok" in v["checks"][nombre]
+        assert "detalle" in v["checks"][nombre]
+    assert isinstance(v["advertencias"], list)
+
+
+@patch("app.geocoding.reverse._nominatim_reverse", new_callable=AsyncMock, return_value=None)
+def test_verificacion_fuera_de_cali(mock_nominatim):
+    """Coordenadas fuera de Cali → nivel='fuera_cali' y score=0."""
+    from app.geocoding.reverse import reverse_geocode
+
+    result = _run(reverse_geocode(LAT_BOGOTA, LON_BOGOTA, usar_nominatim=False))
+    v = result["verificacion"]
+    assert v["nivel"] == "fuera_cali"
+    assert v["score"] == 0
+    assert any("Cali" in adv for adv in v["advertencias"])
+
+
+@patch("app.geocoding.reverse._nominatim_reverse", new_callable=AsyncMock, return_value=None)
+def test_verificacion_score_alto_en_centro_cali(mock_nominatim):
+    """El centro de Cali (Plaza de Caycedo) tiene cobertura completa de basemaps,
+    por lo que el score debe ser al menos 'media' (>=50)."""
+    from app.geocoding.reverse import reverse_geocode
+
+    result = _run(reverse_geocode(LAT_CALI, LON_CALI, usar_nominatim=False))
+    v = result["verificacion"]
+    assert v["score"] >= 50, (
+        f"Score {v['score']} demasiado bajo en el centro de Cali. "
+        f"advertencias={v['advertencias']}"
+    )

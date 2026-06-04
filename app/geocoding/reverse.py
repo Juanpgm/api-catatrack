@@ -156,7 +156,8 @@ def _componer_direccion(
 def _lookup_local_cached(lat_q: float, lon_q: float) -> dict:
     barrio_info = si.barrio_de_robusto(lon_q, lat_q)
     comuna_info = si.comuna_de_robusto(lon_q, lat_q)
-    via = si.via_mas_cercana(lon_q, lat_q)
+    # La única fuente vial disponible son los cruces; inferimos la vía dominante.
+    via = si.via_inferida_de_cruces(lon_q, lat_q)
     cruce = si.cruce_mas_cercano(lon_q, lat_q)
     return {
         "barrio": barrio_info["primario"],
@@ -168,6 +169,7 @@ def _lookup_local_cached(lat_q: float, lon_q: float) -> dict:
         "comuna_vecinos": comuna_info.get("vecinos", []),
         "comuna_dist_borde_m": comuna_info["dist_borde_m"],
         "via": via,
+        "via_inferida": via is not None,
         "cruce": cruce,
     }
 
@@ -252,6 +254,159 @@ def _reconciliar_comuna(local: dict, osm: Optional[dict]) -> tuple[Optional[str]
     return primario, "local"
 
 
+def _verificar_direccion(
+    local: dict,
+    barrio_final: Optional[str],
+    comuna_final: Optional[str],
+    fuente_barrio: str,
+    fuente_comuna: str,
+    nominatim: Optional[dict],
+    dentro_cali: bool,
+) -> dict:
+    """
+    Cruza señales geométricas (basemaps locales) y semánticas (Nominatim) para
+    estimar la confianza de la dirección reconstruida.
+
+    Devuelve un dict con:
+      - score: 0-100 (mayor = más confiable).
+      - nivel: 'alta' | 'media' | 'baja' | 'fuera_cali'.
+      - checks: dict de verificaciones puntuales con `ok` y `detalle`.
+      - advertencias: lista de strings con problemas detectados.
+    """
+    checks: dict[str, dict] = {}
+    advertencias: list[str] = []
+
+    # 1) Dentro del bbox de Cali (gate principal)
+    checks["dentro_cali"] = {
+        "ok": bool(dentro_cali),
+        "detalle": "Coordenada dentro del bbox de Cali" if dentro_cali else
+                    "Coordenada fuera del bbox de Cali",
+    }
+    if not dentro_cali:
+        advertencias.append("Coordenada fuera de Cali; basemaps no aplican.")
+        return {
+            "score": 0,
+            "nivel": "fuera_cali",
+            "checks": checks,
+            "advertencias": advertencias,
+        }
+
+    # 2) Barrio asignado por contención (no por nearest)
+    dist_b = local.get("barrio_dist_borde_m") or 0.0
+    barrio_contenido = barrio_final is not None and dist_b > 0.0
+    checks["barrio_contenido"] = {
+        "ok": barrio_contenido,
+        "detalle": f"barrio={barrio_final!r}, dist_borde={dist_b:.1f} m",
+    }
+    if barrio_final is None:
+        advertencias.append("Barrio no identificado por basemaps.")
+
+    # 3) Comuna asignada por contención
+    dist_c = local.get("comuna_dist_borde_m") or 0.0
+    comuna_contenida = comuna_final is not None and dist_c > 0.0
+    checks["comuna_contenida"] = {
+        "ok": comuna_contenida,
+        "detalle": f"comuna={comuna_final!r}, dist_borde={dist_c:.1f} m",
+    }
+    if comuna_final is None:
+        advertencias.append("Comuna/corregimiento no identificado por basemaps.")
+
+    # 4) Concordancia con OSM (no obligatoria, pero suma puntos)
+    osm_barrio = _norm((nominatim or {}).get("suburb"))
+    osm_comuna = _norm(
+        _normalizar_comuna_osm((nominatim or {}).get("city_district"))
+    )
+    barrio_n = _norm(barrio_final)
+    comuna_n = _norm(comuna_final)
+    osm_acuerdo_barrio = bool(osm_barrio and osm_barrio == barrio_n)
+    osm_acuerdo_comuna = bool(osm_comuna and osm_comuna == comuna_n)
+    checks["osm_acuerdo_barrio"] = {
+        "ok": osm_acuerdo_barrio,
+        "detalle": f"osm={osm_barrio or '∅'} vs local={barrio_n or '∅'}",
+    }
+    checks["osm_acuerdo_comuna"] = {
+        "ok": osm_acuerdo_comuna,
+        "detalle": f"osm={osm_comuna or '∅'} vs local={comuna_n or '∅'}",
+    }
+    if nominatim and osm_barrio and not osm_acuerdo_barrio:
+        advertencias.append(
+            f"OSM reporta barrio '{(nominatim or {}).get('suburb')}' "
+            f"distinto al catastral '{barrio_final}'."
+        )
+
+    # 5) Vía soportada: catastral, inferida por cruces o ausente
+    via = local.get("via")
+    via_inferida = bool(local.get("via_inferida"))
+    if via is None:
+        via_estado = "ausente"
+    elif via_inferida:
+        soporte = int(via.get("soporte_cruces") or 0)
+        via_estado = "inferida_fuerte" if soporte >= 2 else "inferida_debil"
+    else:
+        via_estado = "catastral"
+    checks["via_disponible"] = {
+        "ok": via is not None,
+        "detalle": f"estado={via_estado}, dist={via.get('distancia_m') if via else 'N/A'} m",
+    }
+    if via is None:
+        advertencias.append("No se pudo determinar una vía cercana.")
+    elif via_estado == "inferida_debil":
+        advertencias.append(
+            "Vía inferida con soporte débil (un solo cruce); úsese con cautela."
+        )
+
+    # 6) Cruce cercano para anclar el numeral
+    cruce = local.get("cruce")
+    cruce_ok = cruce is not None and (cruce.get("distancia_m") or 999) <= 80.0
+    checks["cruce_anclaje"] = {
+        "ok": cruce_ok,
+        "detalle": (
+            f"cruce={cruce['nombre']!r} a {cruce['distancia_m']} m"
+            if cruce else "Sin cruce cercano (<150 m)"
+        ),
+    }
+
+    # ───── Score ponderado (0-100) ─────
+    score = 0
+    if checks["barrio_contenido"]["ok"]:
+        score += 25
+    elif barrio_final is not None:
+        score += 10  # asignado por vecindad (caso borde)
+    if checks["comuna_contenida"]["ok"]:
+        score += 20
+    elif comuna_final is not None:
+        score += 8
+    if via is not None:
+        score += 20 if via_estado in ("catastral", "inferida_fuerte") else 10
+    if cruce_ok:
+        score += 15
+    elif cruce is not None:
+        score += 5
+    if osm_acuerdo_barrio:
+        score += 10
+    if osm_acuerdo_comuna:
+        score += 10
+    # Bonus por reconciliación OSM
+    if fuente_barrio == "osm_corrige_borde":
+        score = min(100, score + 5)
+
+    score = max(0, min(100, score))
+
+    if score >= 75:
+        nivel = "alta"
+    elif score >= 50:
+        nivel = "media"
+    else:
+        nivel = "baja"
+
+    return {
+        "score": score,
+        "nivel": nivel,
+        "checks": checks,
+        "advertencias": advertencias,
+    }
+
+
 async def reverse_geocode(
     lat: float,
     lon: float,
@@ -286,6 +441,16 @@ async def reverse_geocode(
         local["via"], local["cruce"], barrio_final, comuna_final, nominatim
     )
 
+    verificacion = _verificar_direccion(
+        local=local,
+        barrio_final=barrio_final,
+        comuna_final=comuna_final,
+        fuente_barrio=fuente_barrio,
+        fuente_comuna=fuente_comuna,
+        nominatim=nominatim,
+        dentro_cali=dentro_cali,
+    )
+
     return {
         "success": True,
         "coordenada": {"lat": lat, "lon": lon},
@@ -298,6 +463,7 @@ async def reverse_geocode(
         "direccion_osm": (nominatim or {}).get("display_name"),
         "osm": nominatim,
         "fuentes": fuentes,
+        "verificacion": verificacion,
         "asignacion": {
             "barrio_fuente": fuente_barrio,
             "barrio_local": local.get("barrio"),
