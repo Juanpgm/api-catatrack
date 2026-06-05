@@ -955,6 +955,7 @@ class RegistroRequerimientoResponse(BaseModel):
     fecha_registro: str
     organismos_encargados: List[str]
     organismos_encargados_origen: Optional[str] = None  # "cliente" | "auto"
+    organismos_detalle: Optional[List[dict]] = None  # [{organismo, caso, accion}] del selector
     tipo_requerimiento_origen: Optional[str] = None  # "cliente" | "auto"
     acciones_por_organismo: Optional[Dict[str, List[str]]] = None
     clasificacion_meta: Optional[dict] = None
@@ -1917,7 +1918,11 @@ async def post_registrar_requerimiento(
         comuna_corregimiento = geo_result["comuna_corregimiento"]
         
         # Parsear organismos encargados (opcional: si viene vacío o ausente se infiere)
+        # Acepta dos formatos:
+        #   - Legado (string array):   ["DAGMA", "EMCALI"]
+        #   - Enriquecido (selector):  [{"organismo": "DAGMA", "caso": "Poda normal", "accion": "Poda"}]
         organismos_list: List[str] = []
+        organismos_detalle: List[dict] = []  # Detalle completo del selector
         organismos_origen = "cliente"
         clasificacion_meta: Optional[dict] = None
         if organismos_encargados:
@@ -1925,7 +1930,20 @@ async def post_registrar_requerimiento(
                 _parsed = json.loads(organismos_encargados)
                 if not isinstance(_parsed, list):
                     raise ValueError("organismos_encargados debe ser un array")
-                organismos_list = [str(org).strip() for org in _parsed if str(org).strip()]
+                for item in _parsed:
+                    if isinstance(item, dict):
+                        # Formato enriquecido: {organismo, caso, accion}
+                        nombre = str(item.get("organismo", "")).strip()
+                        if nombre:
+                            organismos_list.append(nombre)
+                            organismos_detalle.append({
+                                "organismo": nombre,
+                                "caso": str(item.get("caso", "")).strip(),
+                                "accion": str(item.get("accion", "")).strip(),
+                            })
+                    elif isinstance(item, str) and item.strip():
+                        # Formato legado: strings simples
+                        organismos_list.append(item.strip())
             except (json.JSONDecodeError, ValueError) as e:
                 raise HTTPException(
                     status_code=400,
@@ -2114,6 +2132,7 @@ async def post_registrar_requerimiento(
             "fecha_registro": fecha_registro.isoformat(),
             "organismos_encargados": organismos_list,
             "organismos_encargados_origen": organismos_origen,
+            "organismos_detalle": organismos_detalle,
             "acciones_por_organismo": acciones_por_organismo,
             "clasificacion_meta": clasificacion_meta,
             "created_at": now_colombia().isoformat(),
@@ -2151,6 +2170,7 @@ async def post_registrar_requerimiento(
             fecha_registro=fecha_registro.isoformat(),
             organismos_encargados=organismos_list,
             organismos_encargados_origen=organismos_origen,
+            organismos_detalle=organismos_detalle if organismos_detalle else None,
             tipo_requerimiento_origen=tipo_requerimiento_origen,
             acciones_por_organismo=acciones_por_organismo,
             clasificacion_meta=clasificacion_meta,
