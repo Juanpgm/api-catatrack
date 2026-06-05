@@ -3,6 +3,7 @@ Rutas para el módulo de Seguimiento de Requerimientos (Kanban)
 Flujo: Programar Visita → Registrar Requerimientos → Gestión Kanban
 """
 from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi.responses import Response
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ import uuid
 
 from app.firebase_config import db
 from app.auth_system.dependencies import get_current_user
+from app.utils.pdf_generator import generar_reporte_visita
 
 router = APIRouter(prefix="/seguimiento", tags=["Seguimiento de Requerimientos"])
 
@@ -527,4 +529,68 @@ async def asignar_encargado(
         raise HTTPException(status_code=500, detail=f"Error asignando encargado: {str(e)}")
 
 
+# ==================== REPORTE PDF ====================
+
+@router.get(
+    "/visitas/{visita_id}/reporte-pdf",
+    summary="📄 GET | Descargar informe PDF de visita",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/pdf": {}},
+            "description": "PDF del informe de visita generado exitosamente.",
+        },
+        404: {"description": "Visita no encontrada."},
+        500: {"description": "Error interno al generar el PDF."},
+    },
+)
+async def descargar_reporte_pdf(
+    visita_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Genera y descarga el informe PDF de una visita de campo junto con todos
+    sus requerimientos asociados.
+
+    El archivo resultante se llama ``informe-visita-{visita_id}.pdf`` y puede
+    ser guardado directamente desde el navegador.
+    """
+    try:
+        # Obtener la visita
+        doc_ref = db.collection("visitas_programadas").document(visita_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail=f"Visita {visita_id} no encontrada")
+
+        visita = doc.to_dict() or {}
+        visita["id"] = visita_id
+
+        # Obtener los requerimientos asociados a esta visita
+        query = (
+            db.collection("requerimientos_seguimiento")
+            .where("visita_id", "==", visita_id)
+            .order_by("created_at")
+        )
+        docs_req = list(query.stream())
+        requerimientos = []
+        for d in docs_req:
+            r = d.to_dict() or {}
+            r["id"] = d.id
+            requerimientos.append(r)
+
+        pdf_bytes = generar_reporte_visita(visita, requerimientos)
+
+        filename = f"informe-visita-{visita_id}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(pdf_bytes)),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
 
