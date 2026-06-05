@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.auth_system.dependencies import get_current_user
 from app.geocoding.reverse import reverse_geocode
 
 router = APIRouter(prefix="/api", tags=["Geocoding"])
@@ -70,7 +69,6 @@ class ReverseGeocodeResponse(BaseModel):
 )
 async def reverse_geocode_endpoint(
     payload: ReverseGeocodeRequest,
-    current_user: dict = Depends(get_current_user),
 ):
     """
     Convierte (lat, lon) en una dirección legible combinando los basemaps
@@ -95,7 +93,6 @@ async def reverse_geocode_get(
     lat: float = Query(..., ge=-90.0, le=90.0),
     lon: float = Query(..., ge=-180.0, le=180.0),
     usar_nominatim: bool = Query(default=True),
-    current_user: dict = Depends(get_current_user),
 ):
     try:
         return await reverse_geocode(lat, lon, usar_nominatim=usar_nominatim)
