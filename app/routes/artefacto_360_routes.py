@@ -2315,3 +2315,236 @@ async def obtener_requerimientos(
             status_code=500,
             detail=f"Error obteniendo requerimientos: {str(e)}"
         )
+
+
+# ==================== ENDPOINT: Editar Requerimiento ====================#
+@router.patch(
+    "/editar-requerimiento/{req_id}",
+    summary="✏️ PATCH | Editar Requerimiento",
+    description="Edita un requerimiento existente en Firebase, permitiendo agregar/eliminar fotos y audios en S3."
+)
+async def patch_editar_requerimiento(
+    req_id: str,
+    datos_solicitante: Optional[str] = Form(None),
+    tipo_requerimiento: Optional[str] = Form(None),
+    requerimiento: Optional[str] = Form(None),
+    observaciones: Optional[str] = Form(None),
+    coords: Optional[str] = Form(None),
+    direccion: Optional[str] = Form(None),
+    organismos_encargados: Optional[str] = Form(None),
+    eliminar_s3_keys: Optional[str] = Form(None),
+    eliminar_nota_voz: Optional[bool] = Form(None),
+    nota_voz: Optional[UploadFile] = File(None),
+    fotos: List[UploadFile] = File(default=[])
+):
+    try:
+        doc_ref = db.collection('requerimientos').document(req_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail=f"Requerimiento {req_id} no encontrado")
+
+        current_data = doc.to_dict() or {}
+        vid = current_data.get("vid")
+        rid = current_data.get("rid")
+
+        updates = {}
+
+        if requerimiento is not None:
+            updates["requerimiento"] = requerimiento
+        if observaciones is not None:
+            updates["observaciones"] = observaciones
+        if direccion is not None:
+            updates["direccion"] = direccion
+        if tipo_requerimiento is not None:
+            updates["tipo_requerimiento"] = tipo_requerimiento
+            updates["tipo_requerimiento_origen"] = "cliente"
+
+        if datos_solicitante is not None:
+            try:
+                datos_solicitante_dict = json.loads(datos_solicitante)
+                if not isinstance(datos_solicitante_dict, dict):
+                    raise ValueError("datos_solicitante debe ser un diccionario JSON")
+                updates["datos_solicitante"] = datos_solicitante_dict
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error en datos_solicitante: {str(e)}")
+
+        if coords is not None:
+            try:
+                coords_dict = json.loads(coords)
+                coordinates = coords_dict.get('coordinates')
+                lng = float(coordinates[0])
+                lat = float(coordinates[1])
+                geo_result = geolocate_point(lng, lat)
+                updates["barrio_vereda"] = geo_result["barrio_vereda"]
+                updates["comuna_corregimiento"] = geo_result["comuna_corregimiento"]
+                updates["coords"] = coords_dict
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error en coords: {str(e)}")
+
+        if organismos_encargados is not None:
+            try:
+                _parsed = json.loads(organismos_encargados)
+                organismos_list = []
+                organismos_detalle = []
+                for item in _parsed:
+                    if isinstance(item, dict):
+                        nombre = str(item.get("organismo", "")).strip()
+                        if nombre:
+                            organismos_list.append(nombre)
+                            organismos_detalle.append({
+                                "organismo": nombre,
+                                "caso": str(item.get("caso", "")).strip(),
+                                "accion": str(item.get("accion", "")).strip(),
+                            })
+                    elif isinstance(item, str) and item.strip():
+                        organismos_list.append(item.strip())
+                updates["organismos_encargados"] = organismos_list
+                updates["organismos_detalle"] = organismos_detalle
+                updates["organismos_encargados_origen"] = "cliente"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error en organismos_encargados: {str(e)}")
+
+        current_docs = current_data.get("documentos_s3", [])
+        if eliminar_s3_keys:
+            try:
+                keys_to_delete = json.loads(eliminar_s3_keys)
+                if not isinstance(keys_to_delete, list):
+                    raise ValueError("eliminar_s3_keys debe ser una lista JSON")
+
+                s3_client = get_s3_client()
+                bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
+
+                for key in keys_to_delete:
+                    try:
+                        s3_client.delete_object(Bucket=bucket_name, Key=key)
+                    except Exception as s3_err:
+                        print(f"⚠️ Error eliminando {key} de S3: {s3_err}")
+
+                current_docs = [d for d in current_docs if d.get("s3_key") not in keys_to_delete]
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error al eliminar archivos S3: {str(e)}")
+
+        if fotos:
+            import mimetypes
+            s3_client = get_s3_client()
+            bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
+            allowed_extensions = {
+                ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
+                ".pdf", ".gif", ".bmp", ".tiff", ".tif",
+            }
+            for foto in fotos:
+                if not foto or not foto.filename:
+                    continue
+                ext = os.path.splitext(foto.filename)[1].lower()
+                guessed_type, _ = mimetypes.guess_type(foto.filename)
+                content_type = foto.content_type
+                if content_type in (None, "", "application/octet-stream") and guessed_type:
+                    content_type = guessed_type
+                if ext not in allowed_extensions:
+                    continue
+                file_content = await foto.read()
+                if len(file_content) == 0:
+                    continue
+                safe_name = re.sub(r'[^\w.\-]', '_', foto.filename)
+                s3_key = f"requerimientos/{vid}/{rid}/{uuid.uuid4().hex}_{safe_name}"
+                s3_client.put_object(
+                    Bucket=bucket_name, Key=s3_key,
+                    Body=file_content, ContentType=content_type or "application/octet-stream",
+                )
+                current_docs.append({
+                    "filename": foto.filename, "s3_key": s3_key,
+                    "content_type": content_type or "application/octet-stream", "size": len(file_content),
+                })
+
+        updates["documentos_s3"] = current_docs
+
+        nota_voz_url = current_data.get("nota_voz_url")
+        transcripciones = current_data.get("transcripciones", [])
+        if eliminar_nota_voz:
+            if nota_voz_url:
+                try:
+                    s3_client = get_s3_client()
+                    bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
+                    key_part = nota_voz_url.split(f"https://{bucket_name}.s3.amazonaws.com/")
+                    if len(key_part) == 2:
+                        s3_client.delete_object(Bucket=bucket_name, Key=key_part[1])
+                except Exception as s3_err:
+                    print(f"⚠️ Error eliminando nota de voz de S3: {s3_err}")
+            updates["nota_voz_url"] = None
+            updates["transcripciones"] = []
+
+        if nota_voz and nota_voz.filename:
+            if nota_voz_url:
+                try:
+                    s3_client = get_s3_client()
+                    bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
+                    key_part = nota_voz_url.split(f"https://{bucket_name}.s3.amazonaws.com/")
+                    if len(key_part) == 2:
+                        s3_client.delete_object(Bucket=bucket_name, Key=key_part[1])
+                except Exception as s3_err:
+                    print(f"⚠️ Error elminando nota de voz anterior: {s3_err}")
+
+            audio_content = await nota_voz.read()
+            audio_extension = os.path.splitext(nota_voz.filename)[1] or '.mp3'
+
+            try:
+                transcripcion = _transcribir_audio_whisper(
+                    audio_bytes=audio_content,
+                    filename=nota_voz.filename
+                )
+                if transcripcion:
+                    transcripciones = [transcripcion]
+                else:
+                    transcripciones = []
+            except Exception as whisper_err:
+                print(f"⚠️ Whisper error: {whisper_err}")
+                transcripciones = []
+
+            audio_filename = f"requerimientos/{vid}/{rid}/nota_voz_{uuid.uuid4().hex}{audio_extension}.gz"
+            compressed_content = gzip.compress(audio_content)
+
+            s3_client = get_s3_client()
+            bucket_name = os.getenv('S3_BUCKET_NAME', 'catatrack-photos')
+            s3_client.put_object(
+                Bucket=bucket_name,
+                Key=audio_filename,
+                Body=compressed_content,
+                ContentType=nota_voz.content_type,
+                ContentEncoding='gzip'
+            )
+            updates["nota_voz_url"] = f"https://{bucket_name}.s3.amazonaws.com/{audio_filename}"
+            updates["transcripciones"] = transcripciones
+
+        updates["updated_at"] = now_colombia().isoformat()
+        updates["timestamp"] = now_colombia().isoformat()
+
+        doc_ref.update(updates)
+
+        updated_doc = doc_ref.get()
+        s3_client = None
+        try:
+            s3_client = get_s3_client()
+        except Exception as e:
+            print(f"⚠️ No se pudo crear cliente S3 para URLs presignadas: {e}")
+
+        data = updated_doc.to_dict() or {}
+        data['id'] = req_id
+        if s3_client:
+            documentos = _listar_documentos_s3(vid, rid, s3_client=s3_client)
+            data['documentos_con_enlaces'] = documentos
+            data['total_documentos'] = len(documentos)
+        else:
+            data['documentos_con_enlaces'] = []
+            data['total_documentos'] = 0
+
+        return {
+            "success": True,
+            "id": req_id,
+            "message": "Requerimiento editado exitosamente",
+            "requerimiento": clean_nan_values(data)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error editando requerimiento: {str(e)}"
+        )
