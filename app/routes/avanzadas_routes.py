@@ -42,6 +42,7 @@ from app.firebase_config import db
 # upload/delete/list/presign).
 from app.utils import s3_storage
 from app.utils.s3_storage import get_s3_client
+from app.utils.avanzada_pdf_generator import generar_reporte_avanzada
 
 router = APIRouter(prefix="/avanzadas", tags=["Avanzadas Diagnósticas"])
 
@@ -1435,6 +1436,59 @@ async def eliminar_avanzada(
     _invalidar_cache_geo()
 
     return Response(status_code=204)
+
+
+# ==================== REPORTE PDF ====================
+
+@router.get(
+    "/{client_id}/reporte-pdf",
+    summary="📄 GET | Descargar informe PDF de avanzada",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/pdf": {}},
+            "description": "PDF del informe de avanzada generado exitosamente.",
+        },
+        404: {"description": "Avanzada no encontrada."},
+        500: {"description": "Error interno al generar el PDF."},
+    },
+)
+async def descargar_reporte_pdf_avanzada(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Genera y descarga el informe PDF de una Avanzada Diagnóstica junto con
+    todos sus requerimientos, agrupados por entidad, y un mapa general de
+    recorrido (OpenStreetMap).
+
+    El archivo resultante se llama ``informe-avanzada-{client_id}.pdf``.
+    """
+    avanzada_ref = db.collection("avanzadas").document(client_id)
+    doc = avanzada_ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
+
+    try:
+        avanzada_out = _avanzada_existente_a_out(doc)
+        avanzada_dict = avanzada_out.model_dump(exclude={"requerimientos"})
+        requerimientos = [r.model_dump() for r in avanzada_out.requerimientos]
+
+        pdf_bytes = generar_reporte_avanzada(avanzada_dict, requerimientos)
+
+        filename = f"informe-avanzada-{client_id}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(pdf_bytes)),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
 
 
 # ==================== SUB-RECURSO: REQUERIMIENTOS DE AVANZADA ====================
