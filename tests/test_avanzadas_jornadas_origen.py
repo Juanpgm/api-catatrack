@@ -243,6 +243,48 @@ def test_crear_requerimientos_jornada_continua_numeracion_incremental(client, fa
     assert ids == ["jor_incremental_0", "jor_incremental_1"]
 
 
+def test_crear_requerimientos_jornada_no_colisiona_tras_borrar_indice_intermedio(client, fake_db):
+    """Invariante de la Decisión de diseño #5, aplicada también del lado
+    de Jornadas Integrales (ver Open Question de design.md): el próximo
+    ``req_index`` debe ser ``max(existentes) + 1``, no ``len(existentes)``.
+    Secuencia: idx0, idx1, idx2 -> se borra el idx1 INTERMEDIO (queda
+    [0, 2], len=2 pero max=2) -> el próximo:
+    - con len(): asignaría 2 -> COLISIONA con el idx2 que sigue vivo
+      (pisaría su documento).
+    - con max()+1: asigna 3 -> sin colisión.
+
+    No existe todavía un endpoint DELETE de requerimiento individual del
+    lado de Jornadas, así que el borrado del índice intermedio se simula
+    manipulando directamente el fake_db (mismo criterio que el resto de
+    los tests de este módulo).
+    """
+    _crear_jornada_http(client, client_id="jor_maxplus1")
+    _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 0", "ubicacion": "U0"},
+    ])
+    _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 1", "ubicacion": "U1"},
+    ])
+    r3 = _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 2", "ubicacion": "U2"},
+    ])
+    assert r3.json()["requerimientos"][0]["req_index"] == 2
+
+    fake_db.collection("avanzadas_requerimientos").document("jor_maxplus1_1").delete()
+
+    r4 = _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 3", "ubicacion": "U3"},
+    ])
+    assert r4.status_code == 201
+    creado = r4.json()["requerimientos"][0]
+    assert creado["req_index"] == 3
+    assert creado["id"] == "jor_maxplus1_3"
+
+    # El idx2 preexistente sigue intacto -- no fue pisado por una colisión.
+    ids = sorted(d.id for d in fake_db.collection("avanzadas_requerimientos").stream())
+    assert ids == ["jor_maxplus1_0", "jor_maxplus1_2", "jor_maxplus1_3"]
+
+
 def test_crear_requerimientos_jornada_upsert_categoria_personalizada(client, fake_db):
     _crear_jornada_http(client, client_id="jor_cat")
     response = _post_requerimientos_jornada(client, "jor_cat", [
@@ -371,6 +413,65 @@ def test_geo_requerimiento_avanzada_huerfano_se_omite_y_cuenta(client, fake_db):
     body = client.get("/avanzadas/geo").json()
     assert body["requerimientos"] == []
     assert body["omitidos"]["requerimientos"] == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Invariantes de 'origen' ante DELETE: borrar un tipo no debe afectar al
+# otro, ni contaminar los agregados de /avanzadas/estadisticas y
+# /avanzadas/geo (Fase 3, tasks 3.5/3.6).
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_delete_avanzada_no_afecta_requerimientos_de_jornada(client, fake_db):
+    _set_avanzada(fake_db, "cid-avz-del")
+    _set_requerimiento(
+        fake_db, "cid-avz-del_0", avanzada_client_id="cid-avz-del", origen="avanzada", req_index=0,
+    )
+    _set_jornada(fake_db, "jor-intacta")
+    _set_requerimiento(
+        fake_db, "req-jor-intacto", jornada_client_id="jor-intacta", avanzada_client_id=None,
+        origen="jornada", coordenadas="3.46, -76.54",
+    )
+
+    response = client.delete("/avanzadas/cid-avz-del")
+    assert response.status_code == 204
+
+    doc = fake_db.collection("avanzadas_requerimientos").document("req-jor-intacto").get()
+    assert doc.exists
+    assert doc.to_dict()["origen"] == "jornada"
+
+    body = client.get("/avanzadas/estadisticas").json()
+    assert body["totales"]["requerimientos"] == 1
+
+    geo = client.get("/avanzadas/geo").json()
+    assert len(geo["requerimientos"]) == 1
+    assert geo["requerimientos"][0]["origen"] == "jornada"
+
+
+def test_delete_jornada_no_afecta_requerimientos_de_avanzada(client, fake_db):
+    _set_jornada(fake_db, "jor-del-inv")
+    _set_requerimiento(
+        fake_db, "req-jor-del-inv", jornada_client_id="jor-del-inv", avanzada_client_id=None,
+        origen="jornada",
+    )
+    _set_avanzada(fake_db, "cid-avz-intacta")
+    _set_requerimiento(
+        fake_db, "req-avz-intacto", avanzada_client_id="cid-avz-intacta", origen="avanzada",
+        coordenadas="3.46, -76.54",
+    )
+
+    response = client.delete("/jornadas/jor-del-inv")
+    assert response.status_code == 204
+
+    doc = fake_db.collection("avanzadas_requerimientos").document("req-avz-intacto").get()
+    assert doc.exists
+    assert doc.to_dict()["origen"] == "avanzada"
+
+    body = client.get("/avanzadas/estadisticas").json()
+    assert body["totales"]["requerimientos"] == 1
+
+    geo = client.get("/avanzadas/geo").json()
+    assert len(geo["requerimientos"]) == 1
+    assert geo["requerimientos"][0]["origen"] == "avanzada"
 
 
 # ──────────────────────────────────────────────────────────────────────────

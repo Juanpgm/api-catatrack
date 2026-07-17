@@ -160,11 +160,24 @@ class FakeFirestore:
 
 
 class FakeS3Client:
-    """Sustituto mínimo de boto3 S3 client: solo registra los put_object realizados."""
+    """Sustituto mínimo de boto3 S3 client: registra put_object/delete_objects
+    y simula list_objects_v2/generate_presigned_url sobre un inventario en
+    memoria (``objects``).
+    """
 
-    def __init__(self, fail_on_upload: bool = False):
+    def __init__(
+        self,
+        fail_on_upload: bool = False,
+        fail_on_delete: bool = False,
+        fail_on_list: bool = False,
+        objects: Optional[list] = None,
+    ):
         self.uploaded: list[dict] = []
+        self.deleted: list[str] = []
         self.fail_on_upload = fail_on_upload
+        self.fail_on_delete = fail_on_delete
+        self.fail_on_list = fail_on_list
+        self._objects: list[dict] = list(objects) if objects else []
 
     def put_object(self, Bucket: str, Key: str, Body: bytes, ContentType: str = None, **kwargs):
         if self.fail_on_upload:
@@ -176,4 +189,24 @@ class FakeS3Client:
             "ContentType": ContentType,
             **kwargs,
         })
+        self._objects.append({"Key": Key, "Size": len(Body) if hasattr(Body, "__len__") else 0})
         return {"ETag": "fake-etag"}
+
+    def delete_objects(self, Bucket: str, Delete: dict, **kwargs):
+        if self.fail_on_delete:
+            raise RuntimeError("Fallo simulado de S3 en delete_objects")
+        keys = [obj["Key"] for obj in Delete.get("Objects", [])]
+        self.deleted.extend(keys)
+        self._objects = [o for o in self._objects if o["Key"] not in keys]
+        return {"Deleted": [{"Key": k} for k in keys]}
+
+    def list_objects_v2(self, Bucket: str, Prefix: str = "", **kwargs):
+        if self.fail_on_list:
+            raise RuntimeError("Fallo simulado de S3 en list_objects_v2")
+        contents = [o for o in self._objects if o["Key"].startswith(Prefix)]
+        return {"Contents": contents} if contents else {}
+
+    def generate_presigned_url(self, ClientMethod: str, Params: dict, ExpiresIn: int = 3600, **kwargs):
+        bucket = Params.get("Bucket")
+        key = Params.get("Key")
+        return f"https://{bucket}.s3.amazonaws.com/{key}?presigned=true&expires={ExpiresIn}"

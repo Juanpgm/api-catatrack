@@ -571,6 +571,78 @@ def test_delete_encuesta_no_encontrada(client):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# DELETE /jornadas/{client_id} — cascada dura (compromisos/seguimientos/
+# encuestas/requerimientos + S3)
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_delete_jornada_cascada_completa(client, fake_db, fake_s3):
+    _crear_jornada(client, client_id="jor_cascada")
+
+    # Croquis -> S3 bajo jornadas/jor_cascada/croquis/...
+    client.post(
+        "/jornadas/jor_cascada/croquis",
+        files={"foto": ("croquis.jpg", b"croquis-bytes", "image/jpeg")},
+    )
+
+    # Compromiso + su seguimiento anidado.
+    _crear_compromiso(client, "jor_cascada", client_id="com_cascada")
+    seg = client.post(
+        "/jornadas/compromisos/com_cascada/seguimientos",
+        json={"client_id": "seg_cascada", "fecha_seguimiento": "2026-07-15", "estado": "ok"},
+    )
+    assert seg.status_code == 201
+
+    # Fotos de verificación del compromiso -> S3 bajo
+    # jornadas/jor_cascada/compromisos/verificacion/...
+    verif = _patch_verificacion(
+        client, "com_cascada", {"estado_verificacion_campo": "cumple"},
+        files=[("fotos", ("verif.jpg", b"verif-bytes", "image/jpeg"))],
+    )
+    assert verif.status_code == 200
+
+    # Encuesta.
+    client.post("/jornadas/jor_cascada/encuestas", json={"client_id": "enc_cascada", "evaluaciones": []})
+
+    # Requerimiento (colección compartida) -> S3 bajo
+    # jornadas/jor_cascada/requerimientos/0/...
+    req = client.post(
+        "/jornadas/jor_cascada/requerimientos",
+        data={"datos": json.dumps({"requerimientos": [
+            {"entidad": "DAGMA - Depto", "requerimiento": "Árbol caído", "ubicacion": "Parque"},
+        ]})},
+        files=[("fotos_req_0", ("req.jpg", b"req-bytes", "image/jpeg"))],
+    )
+    assert req.status_code == 201
+
+    uploads_before = len(fake_s3.uploaded)
+    assert uploads_before == 3  # croquis + verificación + requerimiento
+
+    response = client.delete("/jornadas/jor_cascada")
+    assert response.status_code == 204
+
+    assert fake_db.collection("jornadas_integrales").document("jor_cascada").get().exists is False
+    assert fake_db.collection("jornadas_compromisos").document("com_cascada").get().exists is False
+    assert fake_db.collection("jornadas_seguimientos").document("seg_cascada").get().exists is False
+    assert fake_db.collection("jornadas_encuestas").document("enc_cascada").get().exists is False
+
+    reqs_restantes = (
+        fake_db.collection("avanzadas_requerimientos")
+        .where("jornada_client_id", "==", "jor_cascada")
+        .get()
+    )
+    assert len(reqs_restantes) == 0
+
+    assert len(fake_s3.deleted) == uploads_before
+
+    assert client.get("/jornadas/jor_cascada").status_code == 404
+
+
+def test_delete_jornada_no_encontrada(client):
+    response = client.delete("/jornadas/no-existe")
+    assert response.status_code == 404
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # GET /jornadas — listado
 # ──────────────────────────────────────────────────────────────────────────
 

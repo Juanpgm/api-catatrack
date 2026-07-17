@@ -23,21 +23,23 @@ import copy
 import json
 import os
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.auth_system.dependencies import get_current_user
 from app.firebase_config import db
-# Reutilizamos helpers de avanzadas_routes (S3, sigla de entidad, upsert de
+# Reutilizamos helpers de avanzadas_routes (sigla de entidad, upsert de
 # categorías personalizadas, agrupado de fotos por índice) en vez de
 # duplicarlos: Jornadas Integrales comparte la colección
 # 'avanzadas_requerimientos' y el catálogo de categorías con Avanzadas
 # Diagnósticas (ver Parte 2 del módulo, más abajo).
 from app.routes import avanzadas_routes
+# Módulo unificado de S3 (single source: credenciales, bucket, key format,
+# upload/delete/list/presign).
+from app.utils import s3_storage
 
 router = APIRouter(prefix="/jornadas", tags=["Jornadas Integrales"])
 
@@ -881,6 +883,25 @@ def _parse_verificacion_payload(datos: str) -> VerificacionIn:
         raise HTTPException(status_code=422, detail=e.errors(include_url=False, include_context=False))
 
 
+def _siguiente_offset_requerimientos_jornada(client_id: str) -> int:
+    """Como ``avanzadas_routes._siguiente_req_index`` pero para el lado de
+    Jornadas Integrales: el offset desde el que continúa la numeración de
+    un guardado incremental de requerimientos es ``max(req_index
+    existentes) + 1`` (nunca ``len(...)``, ver Decisión de diseño #5 y su
+    Open Question -- Jornada usaba el mismo offset "buggy" que Avanzada
+    antes de la Parte 2 de este feature). ``len()`` reutilizaría un índice
+    liberado por un requerimiento borrado, colisionando con uno que sigue
+    vivo con un índice mayor.
+    """
+    docs = (
+        db.collection("avanzadas_requerimientos")
+        .where("jornada_client_id", "==", client_id)
+        .get()
+    )
+    indices = [(d.to_dict() or {}).get("req_index", -1) for d in docs]
+    return (max(indices) + 1) if indices else 0
+
+
 def _parse_requerimientos_jornada_payload(datos: str) -> RequerimientosJornadaPayloadIn:
     try:
         parsed = json.loads(datos)
@@ -979,6 +1000,88 @@ async def actualizar_jornada(
     return _responder_json(JornadaEscrituraOut(**_jornada_doc_a_dict(ref.get())), 200)
 
 
+# ==================== ELIMINAR JORNADA (cascada dura) ====================
+
+@router.delete(
+    "/{client_id}",
+    summary="🔴 DELETE | Eliminar Jornada Integral (cascada)",
+    status_code=204,
+)
+async def eliminar_jornada(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Elimina la jornada y cascadea TODOS sus sub-recursos: compromisos
+    (y los seguimientos anidados de cada uno), encuestas, los
+    requerimientos de la colección compartida ``avanzadas_requerimientos``
+    con ``origen='jornada'`` que pertenecen a esta jornada, y sus objetos
+    S3 asociados (borrado por prefijo ``jornadas/{client_id}/``).
+
+    Cascada dura (Decisión de diseño #6): a diferencia de
+    ``eliminar_compromiso`` -- que RECHAZA (409) el borrado de un
+    compromiso individual con seguimientos asociados para evitar
+    huerfanaje ACCIDENTAL -- un DELETE de la jornada PADRE es una acción
+    deliberada del usuario que se espera que arrastre todo lo que le
+    pertenece, igual que ``eliminar_avanzada`` en ``avanzadas_routes.py``.
+    """
+    ref = db.collection("jornadas_integrales").document(client_id)
+    doc = ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Jornada '{client_id}' no encontrada")
+
+    compromiso_docs = (
+        db.collection("jornadas_compromisos").where("jornada_client_id", "==", client_id).get()
+    )
+    for compromiso_doc in compromiso_docs:
+        seguimiento_docs = (
+            db.collection("jornadas_seguimientos")
+            .where("compromiso_client_id", "==", compromiso_doc.id)
+            .get()
+        )
+        for seguimiento_doc in seguimiento_docs:
+            db.collection("jornadas_seguimientos").document(seguimiento_doc.id).delete()
+        db.collection("jornadas_compromisos").document(compromiso_doc.id).delete()
+
+    encuesta_docs = (
+        db.collection("jornadas_encuestas").where("jornada_client_id", "==", client_id).get()
+    )
+    for encuesta_doc in encuesta_docs:
+        db.collection("jornadas_encuestas").document(encuesta_doc.id).delete()
+
+    # Filtro doble (jornada_client_id + origen) a propósito: aunque en la
+    # práctica un doc con jornada_client_id poblado siempre tiene
+    # origen='jornada' (ver crear_requerimientos_jornada), el filtro
+    # explícito documenta la invariante de origen en el propio query en
+    # vez de depender solo de la convención de escritura.
+    req_docs = (
+        db.collection("avanzadas_requerimientos")
+        .where("jornada_client_id", "==", client_id)
+        .where("origen", "==", "jornada")
+        .get()
+    )
+    for req_doc in req_docs:
+        db.collection("avanzadas_requerimientos").document(req_doc.id).delete()
+
+    ref.delete()
+
+    try:
+        s3_client = avanzadas_routes.get_s3_client()
+        s3_storage.delete_prefix(
+            f"jornadas/{client_id}/",
+            s3_client=s3_client,
+            bucket=s3_storage.bucket_name(),
+        )
+    except Exception:
+        # Borrado de S3 es best-effort: no bloquear la eliminación en
+        # Firestore por un problema de credenciales/red con S3 (mismo
+        # criterio que ``eliminar_avanzada``).
+        pass
+
+    _invalidar_caches_relacionadas()
+
+    return Response(status_code=204)
+
+
 # ==================== SUBIR CROQUIS ====================
 
 @router.post(
@@ -1000,16 +1103,24 @@ async def subir_croquis_jornada(
     if not contenido:
         raise HTTPException(status_code=422, detail="El archivo de croquis está vacío")
 
-    bucket_name = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
+    bucket_name = s3_storage.bucket_name()
     try:
         s3_client = avanzadas_routes.get_s3_client()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
 
-    safe_name = avanzadas_routes._safe_filename(foto.filename)
-    s3_key = f"jornadas/{client_id}/croquis/{uuid.uuid4().hex}_{safe_name}"
     try:
-        url = avanzadas_routes._upload_foto(s3_client, bucket_name, s3_key, contenido, foto.content_type)
+        subida = s3_storage.upload_file(
+            contenido,
+            modulo="jornadas",
+            client_id=client_id,
+            categoria="croquis",
+            filename=foto.filename,
+            content_type=foto.content_type,
+            s3_client=s3_client,
+            bucket=bucket_name,
+        )
+        url = subida["s3_url"]
     except Exception:
         raise HTTPException(status_code=502, detail="Error subiendo croquis a almacenamiento externo")
 
@@ -1209,6 +1320,7 @@ async def actualizar_verificacion_compromiso(
     doc = ref.get()
     if not doc.exists:
         raise HTTPException(status_code=404, detail=f"Compromiso '{client_id}' no encontrado")
+    compromiso_data = doc.to_dict() or {}
 
     payload = _parse_verificacion_payload(datos)
 
@@ -1217,22 +1329,35 @@ async def actualizar_verificacion_compromiso(
 
     fotos_urls: List[str] = []
     if archivos:
-        bucket_name = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
+        bucket_name = s3_storage.bucket_name()
         try:
             s3_client = avanzadas_routes.get_s3_client()
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
 
+        # client_id del upload: la JORNADA (denormalizada en el compromiso
+        # como 'jornada_client_id'), no el compromiso mismo -- así la key
+        # S3 queda bajo el prefijo 'jornadas/{jornada_client_id}/' y el
+        # cascade de DELETE /jornadas/{id} (borrado por prefijo) la
+        # alcanza. El id propio del compromiso se conserva como segmento
+        # de 'categoria' para mantener trazabilidad por compromiso.
+        jornada_client_id = compromiso_data.get("jornada_client_id") or client_id
         try:
             for archivo in archivos:
                 contenido = await archivo.read()
                 if not contenido:
                     continue
-                safe_name = avanzadas_routes._safe_filename(archivo.filename)
-                s3_key = f"jornadas/compromisos/{client_id}/verificacion/{uuid.uuid4().hex}_{safe_name}"
-                fotos_urls.append(
-                    avanzadas_routes._upload_foto(s3_client, bucket_name, s3_key, contenido, archivo.content_type)
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="jornadas",
+                    client_id=jornada_client_id,
+                    categoria=f"compromisos/{client_id}/verificacion",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket_name,
                 )
+                fotos_urls.append(subida["s3_url"])
         except Exception:
             raise HTTPException(status_code=502, detail="Error subiendo fotos de verificación a almacenamiento externo")
 
@@ -1338,7 +1463,7 @@ async def crear_requerimientos_jornada(
     form = await request.form()
     fotos_por_requerimiento = avanzadas_routes._agrupar_fotos_por_requerimiento(form)
 
-    bucket_name = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
+    bucket_name = s3_storage.bucket_name()
     s3_client = None
     if fotos_por_requerimiento:
         try:
@@ -1355,11 +1480,17 @@ async def crear_requerimientos_jornada(
                 contenido = await archivo.read()
                 if not contenido:
                     continue
-                safe_name = avanzadas_routes._safe_filename(archivo.filename)
-                s3_key = f"jornadas/{client_id}/requerimientos/{idx}/{uuid.uuid4().hex}_{safe_name}"
-                fotos_urls.append(
-                    avanzadas_routes._upload_foto(s3_client, bucket_name, s3_key, contenido, archivo.content_type)
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="jornadas",
+                    client_id=client_id,
+                    categoria=f"requerimientos/{idx}",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket_name,
                 )
+                fotos_urls.append(subida["s3_url"])
             requerimientos_fotos_urls[idx] = fotos_urls
     except Exception:
         raise HTTPException(status_code=502, detail="Error subiendo fotos a almacenamiento externo")
@@ -1369,13 +1500,10 @@ async def crear_requerimientos_jornada(
     # requerimientos), así que la numeración continúa donde quedaron los
     # ya existentes -- si arrancara siempre en 0 el id determinístico
     # "{client_id}_{idx}" colisionaría con uno ya guardado en una llamada
-    # anterior.
-    existentes = (
-        db.collection("avanzadas_requerimientos")
-        .where("jornada_client_id", "==", client_id)
-        .get()
-    )
-    offset = len(existentes)
+    # anterior. Se usa max(existentes)+1, no len(existentes) (Decisión de
+    # diseño #5): len() reutilizaría un índice liberado por un
+    # requerimiento borrado.
+    offset = _siguiente_offset_requerimientos_jornada(client_id)
 
     now = now_colombia().isoformat()
     creados: List[dict] = []

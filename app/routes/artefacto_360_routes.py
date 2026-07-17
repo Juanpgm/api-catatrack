@@ -1,10 +1,11 @@
 """
 Rutas para gestión de Artefacto de Captura DAGMA
 """
-from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Body
+from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Body, Depends, Request, Response
 from typing import Dict, List, Optional
 from datetime import datetime, timezone, timedelta
 import json
+import logging
 import re
 import unicodedata
 import uuid
@@ -20,9 +21,11 @@ from faster_whisper import WhisperModel
 
 # Importar configuración de Firebase y S3/Storage
 from app.firebase_config import db
-import boto3
-from botocore.exceptions import ClientError
-from botocore.config import Config as BotoConfig
+
+# Módulo unificado de S3 (single source: credenciales, bucket, key format).
+# Re-exportado aquí por compatibilidad con código que aún importa
+# get_s3_client desde este módulo.
+from app.utils.s3_storage import get_s3_client
 
 # Clasificador automático de centros gestores (organismos_encargados)
 from app.classification import clasificar_centros_gestores
@@ -79,9 +82,28 @@ def _transcribir_audio_whisper(audio_bytes: bytes, filename: str, language: str 
 
 
 router = APIRouter(tags=["Artefacto de Captura"])
+logger = logging.getLogger(__name__)
 
 # Zona horaria Colombia (UTC-5)
 _COL_TZ = timezone(timedelta(hours=-5))
+
+
+# ==================== DEPRECACIÓN DE RUTAS LEGACY ====================
+async def _warn_legacy_capture_deprecated(request: Request, response: Response) -> None:
+    """Dependency que marca una ruta legacy de captura de artefacto_360 como
+    deprecated: agrega el header HTTP ``Deprecation`` y registra un warning.
+
+    La ruta permanece completamente funcional — no cambia su comportamiento
+    ni retorna 410 (ver design.md, decision #7: `deprecated=True` + header
+    `Deprecation` + warn-log; el flip a 410/eliminación queda para la
+    purga gateada, fuera de alcance de este cambio).
+    """
+    response.headers["Deprecation"] = "true"
+    logger.warning(
+        "Ruta legacy deprecated invocada: %s %s — usar Avanzada Diagnóstica / Jornada Integral",
+        request.method,
+        request.url.path,
+    )
 
 def now_colombia() -> datetime:
     """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
@@ -159,29 +181,6 @@ def validate_photo_file(file: UploadFile) -> bool:
         raise ValueError(f"Extensión no permitida: {file_ext}")
     
     return True
-
-
-def get_s3_client():
-    """
-    Crear cliente de S3 con las credenciales del entorno
-    """
-    from dotenv import load_dotenv
-    load_dotenv(override=True)
-
-    aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
-    aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-    aws_region = os.getenv('AWS_REGION', 'us-east-2')
-    
-    if not aws_access_key or not aws_secret_key:
-        raise ValueError("Credenciales de AWS no configuradas. Verifica AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY")
-    
-    return boto3.client(
-        's3',
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key,
-        region_name=aws_region,
-        config=BotoConfig(signature_version='s3v4')
-    )
 
 
 def _listar_documentos_s3(vid: str, rid: str, s3_client=None, expiration: int = 3600) -> list:
@@ -1086,7 +1085,9 @@ const response = await fetch('/registrar-visita/', {
 }
 ```
     """,
-    response_model=RegistroVisitaResponse
+    response_model=RegistroVisitaResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registro_visita(payload: RegistroVisitaRequest):
     """
@@ -1479,7 +1480,9 @@ const response = await fetch('/registrar-asistencia-delegado', {
 }
 ```
     """,
-    response_model=RegistroDelegadoResponse
+    response_model=RegistroDelegadoResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registrar_asistencia_delegado(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
@@ -1615,7 +1618,9 @@ incluyendo información personal, dirección, ubicación GPS y timestamp del reg
 }
 ```
     """,
-    response_model=RegistroComunidadResponse
+    response_model=RegistroComunidadResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registrar_asistencia_comunidad(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
@@ -1822,7 +1827,9 @@ const response = await fetch('/registrar-requerimiento', {
 }
 ```
     """,
-    response_model=RegistroRequerimientoResponse
+    response_model=RegistroRequerimientoResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registrar_requerimiento(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
@@ -2321,7 +2328,9 @@ async def obtener_requerimientos(
 @router.patch(
     "/editar-requerimiento/{req_id}",
     summary="✏️ PATCH | Editar Requerimiento",
-    description="Edita un requerimiento existente en Firebase, permitiendo agregar/eliminar fotos y audios en S3."
+    description="Edita un requerimiento existente en Firebase, permitiendo agregar/eliminar fotos y audios en S3.",
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def patch_editar_requerimiento(
     req_id: str,
