@@ -5,6 +5,7 @@ import logging
 import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -36,6 +37,8 @@ from app.routes import (
     seguimiento_routes,
     push_routes,
     geocoding_routes,
+    avanzadas_routes,
+    jornadas_routes,
 )
 
 # Crear aplicación FastAPI
@@ -76,6 +79,23 @@ class UTF8JSONMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 app.add_middleware(UTF8JSONMiddleware)
+
+# Compresión gzip de respuestas grandes (catálogos, listados de avanzadas).
+#
+# Orden verificado empíricamente: Starlette envuelve los middlewares como un
+# stack tipo "onion" -- el ÚLTIMO agregado con add_middleware() queda más
+# afuera (corre primero en la fase de request y ÚLTIMO en la fase de
+# response, justo antes de escribir al socket). Por eso GZipMiddleware se
+# agrega DESPUÉS de UTF8JSONMiddleware: así la compresión es la
+# transformación final aplicada al body, más cerca del cliente, y ningún
+# middleware corre "después" de ella con la suposición de un body sin
+# comprimir. UTF8JSONMiddleware solo reescribe el header content-type
+# (nunca toca el body), así que el orden entre ambos no corrompe nada en
+# ninguno de los dos sentidos -- se probó explícitamente con ambos órdenes
+# (agregando GZip antes y después) y el resultado fue idéntico y correcto
+# en los dos casos -- pero dejamos GZip como capa más externa por ser la
+# posición estándar/más segura para un middleware de compresión.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 def _get_allowed_origins() -> list[str]:
@@ -142,6 +162,8 @@ app.include_router(auth_routes.router)
 app.include_router(seguimiento_routes.router)
 app.include_router(push_routes.router)
 app.include_router(geocoding_routes.router)
+app.include_router(avanzadas_routes.router)
+app.include_router(jornadas_routes.router)
 
 # Pre-carga opcional del modelo SLM de clasificación de centros gestores.
 # Activar con la env var CLASSIFIER_PRELOAD=true (recomendado en Railway con
