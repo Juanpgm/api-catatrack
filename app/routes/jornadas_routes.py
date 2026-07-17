@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.auth_system.dependencies import get_current_user
@@ -981,6 +981,88 @@ async def actualizar_jornada(
     return _responder_json(JornadaEscrituraOut(**_jornada_doc_a_dict(ref.get())), 200)
 
 
+# ==================== ELIMINAR JORNADA (cascada dura) ====================
+
+@router.delete(
+    "/{client_id}",
+    summary="🔴 DELETE | Eliminar Jornada Integral (cascada)",
+    status_code=204,
+)
+async def eliminar_jornada(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Elimina la jornada y cascadea TODOS sus sub-recursos: compromisos
+    (y los seguimientos anidados de cada uno), encuestas, los
+    requerimientos de la colección compartida ``avanzadas_requerimientos``
+    con ``origen='jornada'`` que pertenecen a esta jornada, y sus objetos
+    S3 asociados (borrado por prefijo ``jornadas/{client_id}/``).
+
+    Cascada dura (Decisión de diseño #6): a diferencia de
+    ``eliminar_compromiso`` -- que RECHAZA (409) el borrado de un
+    compromiso individual con seguimientos asociados para evitar
+    huerfanaje ACCIDENTAL -- un DELETE de la jornada PADRE es una acción
+    deliberada del usuario que se espera que arrastre todo lo que le
+    pertenece, igual que ``eliminar_avanzada`` en ``avanzadas_routes.py``.
+    """
+    ref = db.collection("jornadas_integrales").document(client_id)
+    doc = ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Jornada '{client_id}' no encontrada")
+
+    compromiso_docs = (
+        db.collection("jornadas_compromisos").where("jornada_client_id", "==", client_id).get()
+    )
+    for compromiso_doc in compromiso_docs:
+        seguimiento_docs = (
+            db.collection("jornadas_seguimientos")
+            .where("compromiso_client_id", "==", compromiso_doc.id)
+            .get()
+        )
+        for seguimiento_doc in seguimiento_docs:
+            db.collection("jornadas_seguimientos").document(seguimiento_doc.id).delete()
+        db.collection("jornadas_compromisos").document(compromiso_doc.id).delete()
+
+    encuesta_docs = (
+        db.collection("jornadas_encuestas").where("jornada_client_id", "==", client_id).get()
+    )
+    for encuesta_doc in encuesta_docs:
+        db.collection("jornadas_encuestas").document(encuesta_doc.id).delete()
+
+    # Filtro doble (jornada_client_id + origen) a propósito: aunque en la
+    # práctica un doc con jornada_client_id poblado siempre tiene
+    # origen='jornada' (ver crear_requerimientos_jornada), el filtro
+    # explícito documenta la invariante de origen en el propio query en
+    # vez de depender solo de la convención de escritura.
+    req_docs = (
+        db.collection("avanzadas_requerimientos")
+        .where("jornada_client_id", "==", client_id)
+        .where("origen", "==", "jornada")
+        .get()
+    )
+    for req_doc in req_docs:
+        db.collection("avanzadas_requerimientos").document(req_doc.id).delete()
+
+    ref.delete()
+
+    try:
+        s3_client = avanzadas_routes.get_s3_client()
+        s3_storage.delete_prefix(
+            f"jornadas/{client_id}/",
+            s3_client=s3_client,
+            bucket=s3_storage.bucket_name(),
+        )
+    except Exception:
+        # Borrado de S3 es best-effort: no bloquear la eliminación en
+        # Firestore por un problema de credenciales/red con S3 (mismo
+        # criterio que ``eliminar_avanzada``).
+        pass
+
+    _invalidar_caches_relacionadas()
+
+    return Response(status_code=204)
+
+
 # ==================== SUBIR CROQUIS ====================
 
 @router.post(
@@ -1219,6 +1301,7 @@ async def actualizar_verificacion_compromiso(
     doc = ref.get()
     if not doc.exists:
         raise HTTPException(status_code=404, detail=f"Compromiso '{client_id}' no encontrado")
+    compromiso_data = doc.to_dict() or {}
 
     payload = _parse_verificacion_payload(datos)
 
@@ -1233,6 +1316,13 @@ async def actualizar_verificacion_compromiso(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
 
+        # client_id del upload: la JORNADA (denormalizada en el compromiso
+        # como 'jornada_client_id'), no el compromiso mismo -- así la key
+        # S3 queda bajo el prefijo 'jornadas/{jornada_client_id}/' y el
+        # cascade de DELETE /jornadas/{id} (borrado por prefijo) la
+        # alcanza. El id propio del compromiso se conserva como segmento
+        # de 'categoria' para mantener trazabilidad por compromiso.
+        jornada_client_id = compromiso_data.get("jornada_client_id") or client_id
         try:
             for archivo in archivos:
                 contenido = await archivo.read()
@@ -1241,8 +1331,8 @@ async def actualizar_verificacion_compromiso(
                 subida = s3_storage.upload_file(
                     contenido,
                     modulo="jornadas",
-                    client_id=client_id,
-                    categoria="compromisos/verificacion",
+                    client_id=jornada_client_id,
+                    categoria=f"compromisos/{client_id}/verificacion",
                     filename=archivo.filename,
                     content_type=archivo.content_type,
                     s3_client=s3_client,
