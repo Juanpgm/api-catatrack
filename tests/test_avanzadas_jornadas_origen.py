@@ -416,6 +416,65 @@ def test_geo_requerimiento_avanzada_huerfano_se_omite_y_cuenta(client, fake_db):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Invariantes de 'origen' ante DELETE: borrar un tipo no debe afectar al
+# otro, ni contaminar los agregados de /avanzadas/estadisticas y
+# /avanzadas/geo (Fase 3, tasks 3.5/3.6).
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_delete_avanzada_no_afecta_requerimientos_de_jornada(client, fake_db):
+    _set_avanzada(fake_db, "cid-avz-del")
+    _set_requerimiento(
+        fake_db, "cid-avz-del_0", avanzada_client_id="cid-avz-del", origen="avanzada", req_index=0,
+    )
+    _set_jornada(fake_db, "jor-intacta")
+    _set_requerimiento(
+        fake_db, "req-jor-intacto", jornada_client_id="jor-intacta", avanzada_client_id=None,
+        origen="jornada", coordenadas="3.46, -76.54",
+    )
+
+    response = client.delete("/avanzadas/cid-avz-del")
+    assert response.status_code == 204
+
+    doc = fake_db.collection("avanzadas_requerimientos").document("req-jor-intacto").get()
+    assert doc.exists
+    assert doc.to_dict()["origen"] == "jornada"
+
+    body = client.get("/avanzadas/estadisticas").json()
+    assert body["totales"]["requerimientos"] == 1
+
+    geo = client.get("/avanzadas/geo").json()
+    assert len(geo["requerimientos"]) == 1
+    assert geo["requerimientos"][0]["origen"] == "jornada"
+
+
+def test_delete_jornada_no_afecta_requerimientos_de_avanzada(client, fake_db):
+    _set_jornada(fake_db, "jor-del-inv")
+    _set_requerimiento(
+        fake_db, "req-jor-del-inv", jornada_client_id="jor-del-inv", avanzada_client_id=None,
+        origen="jornada",
+    )
+    _set_avanzada(fake_db, "cid-avz-intacta")
+    _set_requerimiento(
+        fake_db, "req-avz-intacto", avanzada_client_id="cid-avz-intacta", origen="avanzada",
+        coordenadas="3.46, -76.54",
+    )
+
+    response = client.delete("/jornadas/jor-del-inv")
+    assert response.status_code == 204
+
+    doc = fake_db.collection("avanzadas_requerimientos").document("req-avz-intacto").get()
+    assert doc.exists
+    assert doc.to_dict()["origen"] == "avanzada"
+
+    body = client.get("/avanzadas/estadisticas").json()
+    assert body["totales"]["requerimientos"] == 1
+
+    geo = client.get("/avanzadas/geo").json()
+    assert len(geo["requerimientos"]) == 1
+    assert geo["requerimientos"][0]["origen"] == "avanzada"
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # GET /avanzadas/{client_id} -- no-leakage de requerimientos de jornada
 # ──────────────────────────────────────────────────────────────────────────
 
