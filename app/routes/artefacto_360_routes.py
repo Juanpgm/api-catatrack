@@ -1,10 +1,11 @@
 """
 Rutas para gestión de Artefacto de Captura DAGMA
 """
-from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Body
+from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Query, Body, Depends, Request, Response
 from typing import Dict, List, Optional
 from datetime import datetime, timezone, timedelta
 import json
+import logging
 import re
 import unicodedata
 import uuid
@@ -81,9 +82,28 @@ def _transcribir_audio_whisper(audio_bytes: bytes, filename: str, language: str 
 
 
 router = APIRouter(tags=["Artefacto de Captura"])
+logger = logging.getLogger(__name__)
 
 # Zona horaria Colombia (UTC-5)
 _COL_TZ = timezone(timedelta(hours=-5))
+
+
+# ==================== DEPRECACIÓN DE RUTAS LEGACY ====================
+async def _warn_legacy_capture_deprecated(request: Request, response: Response) -> None:
+    """Dependency que marca una ruta legacy de captura de artefacto_360 como
+    deprecated: agrega el header HTTP ``Deprecation`` y registra un warning.
+
+    La ruta permanece completamente funcional — no cambia su comportamiento
+    ni retorna 410 (ver design.md, decision #7: `deprecated=True` + header
+    `Deprecation` + warn-log; el flip a 410/eliminación queda para la
+    purga gateada, fuera de alcance de este cambio).
+    """
+    response.headers["Deprecation"] = "true"
+    logger.warning(
+        "Ruta legacy deprecated invocada: %s %s — usar Avanzada Diagnóstica / Jornada Integral",
+        request.method,
+        request.url.path,
+    )
 
 def now_colombia() -> datetime:
     """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
@@ -1065,7 +1085,9 @@ const response = await fetch('/registrar-visita/', {
 }
 ```
     """,
-    response_model=RegistroVisitaResponse
+    response_model=RegistroVisitaResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registro_visita(payload: RegistroVisitaRequest):
     """
@@ -1458,7 +1480,9 @@ const response = await fetch('/registrar-asistencia-delegado', {
 }
 ```
     """,
-    response_model=RegistroDelegadoResponse
+    response_model=RegistroDelegadoResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registrar_asistencia_delegado(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
@@ -1594,7 +1618,9 @@ incluyendo información personal, dirección, ubicación GPS y timestamp del reg
 }
 ```
     """,
-    response_model=RegistroComunidadResponse
+    response_model=RegistroComunidadResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registrar_asistencia_comunidad(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
@@ -1801,7 +1827,9 @@ const response = await fetch('/registrar-requerimiento', {
 }
 ```
     """,
-    response_model=RegistroRequerimientoResponse
+    response_model=RegistroRequerimientoResponse,
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def post_registrar_requerimiento(
     vid: str = Form(..., min_length=1, description="ID de la visita"),
@@ -2300,7 +2328,9 @@ async def obtener_requerimientos(
 @router.patch(
     "/editar-requerimiento/{req_id}",
     summary="✏️ PATCH | Editar Requerimiento",
-    description="Edita un requerimiento existente en Firebase, permitiendo agregar/eliminar fotos y audios en S3."
+    description="Edita un requerimiento existente en Firebase, permitiendo agregar/eliminar fotos y audios en S3.",
+    deprecated=True,
+    dependencies=[Depends(_warn_legacy_capture_deprecated)],
 )
 async def patch_editar_requerimiento(
     req_id: str,
