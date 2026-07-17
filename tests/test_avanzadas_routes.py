@@ -8,6 +8,7 @@ listado y detalle. Firestore y S3 se simulan con los fakes de
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import pytest
 from fastapi import FastAPI
@@ -586,3 +587,147 @@ def test_detalle_avanzada_incluye_requerimientos(client):
 def test_detalle_avanzada_no_encontrada(client):
     response = client.get("/avanzadas/no-existe")
     assert response.status_code == 404
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PATCH /avanzadas/{client_id} — actualización parcial
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_patch_avanzada_actualiza_parcial_y_bump_updated_at(client, fake_db, monkeypatch):
+    fechas = iter([
+        "2026-07-15T10:00:00-05:00",
+        "2026-07-16T11:00:00-05:00",
+    ])
+    monkeypatch.setattr(avanzadas_routes, "now_colombia", lambda: datetime.fromisoformat(next(fechas)))
+
+    created = _post_avanzada(client, _valid_datos(client_id="cid-patch")).json()
+    assert created["updated_at"] == "2026-07-15T10:00:00-05:00"
+
+    response = client.patch("/avanzadas/cid-patch", json={"sector": "Nuevo Sector"})
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["sector"] == "Nuevo Sector"
+    # El resto de los campos queda intacto.
+    assert body["nombre_avanzada"] == created["nombre_avanzada"]
+    assert body["comuna"] == created["comuna"]
+    assert body["updated_at"] == "2026-07-16T11:00:00-05:00"
+
+
+def test_patch_avanzada_no_encontrada(client):
+    response = client.patch("/avanzadas/no-existe", json={"sector": "Nuevo Sector"})
+    assert response.status_code == 404
+
+
+def test_patch_avanzada_validacion_falla_no_modifica_documento(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-patch-invalido"))
+
+    response = client.patch("/avanzadas/cid-patch-invalido", json={"fecha": 123})
+    assert response.status_code == 422
+
+    doc = fake_db.collection("avanzadas").document("cid-patch-invalido").get().to_dict()
+    assert doc["fecha"] == "2026-07-10"
+
+
+def test_patch_avanzada_invalida_caches_de_estadisticas_y_geo(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-patch-cache"))
+    client.get("/avanzadas/estadisticas")
+    client.get("/avanzadas/geo")
+    assert avanzadas_routes._estadisticas_cache is not None
+    assert avanzadas_routes._geo_cache is not None
+
+    client.patch("/avanzadas/cid-patch-cache", json={"sector": "Otro Sector"})
+
+    assert avanzadas_routes._estadisticas_cache is None
+    assert avanzadas_routes._geo_cache is None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PUT /avanzadas/{client_id} — reemplazo completo
+# ──────────────────────────────────────────────────────────────────────────
+
+def _put_payload(**overrides) -> dict:
+    payload = {
+        "nombre_avanzada": "Avanzada Reemplazada",
+        "fecha": "2026-08-01",
+        "estrategia": "Otra Estrategia",
+        "comuna": "COMUNA 05",
+        "barrio": "Nuevo Barrio",
+        "direccion": "Nueva Dirección",
+        "coordenadas": "3.0, -76.0",
+        "encargados": ["Nuevo Encargado"],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_put_avanzada_reemplaza_completo(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-put"))
+
+    response = client.put("/avanzadas/cid-put", json=_put_payload())
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["nombre_avanzada"] == "Avanzada Reemplazada"
+    assert body["fecha"] == "2026-08-01"
+    assert body["comuna"] == "COMUNA 05"
+    assert body["encargados"] == ["Nuevo Encargado"]
+    # Campos opcionales omitidos vuelven al default del schema.
+    assert body["sector"] is None
+    assert body["asistentes"] == []
+
+
+def test_put_avanzada_no_encontrada(client):
+    response = client.put("/avanzadas/no-existe", json=_put_payload())
+    assert response.status_code == 404
+
+
+def test_put_avanzada_rechaza_campo_obligatorio_faltante(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-put-invalido"))
+    payload = _put_payload()
+    del payload["comuna"]
+
+    response = client.put("/avanzadas/cid-put-invalido", json=payload)
+    assert response.status_code == 422
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# DELETE /avanzadas/{client_id} — cascada dura (requerimientos + S3)
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_delete_avanzada_elimina_documento_requerimientos_y_s3(client, fake_db, fake_s3):
+    files = [
+        ("foto_equipo", ("equipo.jpg", b"equipo-bytes", "image/jpeg")),
+        ("fotos_req_0", ("foto1.jpg", b"foto1-bytes", "image/jpeg")),
+    ]
+    _post_avanzada(client, _valid_datos(client_id="cid-del"), files=files)
+    assert len(fake_s3.uploaded) == 2
+    assert len(fake_db.collection("avanzadas_requerimientos").stream()) == 1
+
+    response = client.delete("/avanzadas/cid-del")
+    assert response.status_code == 204
+
+    assert fake_db.collection("avanzadas").document("cid-del").get().exists is False
+    assert len(fake_db.collection("avanzadas_requerimientos").stream()) == 0
+    assert len(fake_s3.deleted) == 2
+
+    assert client.get("/avanzadas/cid-del").status_code == 404
+
+
+def test_delete_avanzada_no_encontrada(client):
+    response = client.delete("/avanzadas/no-existe")
+    assert response.status_code == 404
+
+
+def test_delete_avanzada_invalida_caches(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-del-cache"))
+    client.get("/avanzadas/estadisticas")
+    client.get("/avanzadas/geo")
+    assert avanzadas_routes._estadisticas_cache is not None
+    assert avanzadas_routes._geo_cache is not None
+
+    client.delete("/avanzadas/cid-del-cache")
+
+    assert avanzadas_routes._estadisticas_cache is None
+    assert avanzadas_routes._geo_cache is None
+

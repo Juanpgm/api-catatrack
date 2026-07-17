@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
 from app.auth_system.dependencies import get_current_user
@@ -90,6 +90,58 @@ class AvanzadaCreateIn(BaseModel):
     encargados: List[str] = Field(..., min_length=1)
     asistentes: List[AsistenteIn] = Field(default_factory=list)
     requerimientos: List[RequerimientoAvanzadaIn] = Field(..., min_length=1)
+
+
+class AvanzadaPutIn(BaseModel):
+    """Reemplazo completo de una Avanzada (sin ``client_id``/``requerimientos``,
+    que no se tocan por este endpoint: el primero es inmutable una vez creado
+    el documento, y los segundos tienen su propio sub-recurso CRUD).
+
+    Los campos opcionales (``sector``) que se omitan vuelven al default del
+    schema (``None``), tal como pide el contrato de PUT como reemplazo total.
+    """
+    nombre_avanzada: str = Field(..., min_length=1)
+    fecha: str = Field(..., min_length=1)
+    estrategia: str = Field(..., min_length=1)
+    sector: Optional[str] = None
+    comuna: str = Field(..., min_length=1)
+    barrio: str = Field(..., min_length=1)
+    direccion: str = Field(..., min_length=1)
+    coordenadas: str = Field(..., min_length=1)
+    encargados: List[str] = Field(..., min_length=1)
+    asistentes: List[AsistenteIn] = Field(default_factory=list)
+
+
+class AvanzadaPatchIn(BaseModel):
+    """Actualización parcial: todos los campos son opcionales y solo se
+    aplican los efectivamente enviados (``exclude_unset=True`` al construir
+    el diff), mismo patrón que ``JornadaUpdateIn`` en ``jornadas_routes.py``.
+    """
+    nombre_avanzada: Optional[str] = Field(None, min_length=1)
+    fecha: Optional[str] = Field(None, min_length=1)
+    estrategia: Optional[str] = Field(None, min_length=1)
+    sector: Optional[str] = None
+    comuna: Optional[str] = Field(None, min_length=1)
+    barrio: Optional[str] = Field(None, min_length=1)
+    direccion: Optional[str] = Field(None, min_length=1)
+    coordenadas: Optional[str] = Field(None, min_length=1)
+    encargados: Optional[List[str]] = Field(None, min_length=1)
+    asistentes: Optional[List[AsistenteIn]] = None
+
+
+class RequerimientoAvanzadaPatchIn(BaseModel):
+    """Actualización parcial de un requerimiento sub-recurso. ``fotos_eliminar``
+    recibe URLs (``fotos_urls`` tal como las devuelve la API) a remover; las
+    fotos nuevas se agregan vía el campo multipart ``fotos`` del endpoint,
+    no por este modelo.
+    """
+    entidad: Optional[str] = Field(None, min_length=1)
+    categoria: Optional[str] = None
+    categoria_personalizada: Optional[str] = None
+    requerimiento: Optional[str] = Field(None, min_length=1)
+    ubicacion: Optional[str] = Field(None, min_length=1)
+    coordenadas: Optional[str] = None
+    fotos_eliminar: Optional[List[str]] = None
 
 
 # ==================== MODELOS DE SALIDA ====================
@@ -316,6 +368,35 @@ def _requerimiento_doc_to_out(doc) -> dict:
     data = doc.to_dict() or {}
     data["id"] = doc.id
     return data
+
+
+def _s3_key_from_url(url: str) -> Optional[str]:
+    """Extrae la ``s3_key`` de una ``s3_url`` con el formato que arma
+    ``s3_storage.upload_file`` (``https://{bucket}.s3.amazonaws.com/{key}``).
+
+    Retorna ``None`` si ``url`` no tiene ese formato (p. ej. ya es una URL
+    presignada u otro esquema) -- en vez de adivinar, se prefiere no borrar
+    nada en S3 antes que borrar la key equivocada.
+    """
+    marcador = ".amazonaws.com/"
+    if marcador not in url:
+        return None
+    return url.split(marcador, 1)[1]
+
+
+def _siguiente_req_index(client_id: str) -> int:
+    """Calcula el próximo ``req_index`` para un requerimiento nuevo dentro de
+    una avanzada como ``max(req_index existentes) + 1`` (nunca ``len(...)``,
+    que reutilizaría un índice liberado por un DELETE previo -- ver Decisión
+    de diseño #5).
+    """
+    docs = (
+        db.collection("avanzadas_requerimientos")
+        .where("avanzada_client_id", "==", client_id)
+        .get()
+    )
+    indices = [(d.to_dict() or {}).get("req_index", -1) for d in docs]
+    return (max(indices) + 1) if indices else 0
 
 
 def _construir_catalogo_categorias() -> Dict[str, List[str]]:
@@ -1243,6 +1324,117 @@ async def obtener_geo_avanzadas(current_user: dict = Depends(get_current_user)):
         return GeoOut(**_obtener_geo_cacheado())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculando puntos georreferenciados: {str(e)}")
+
+
+# ==================== ACTUALIZAR AVANZADA (PATCH / PUT) ====================
+# IMPORTANTE: mismo motivo que "/estadisticas" y "/geo" arriba -- estas
+# rutas (y las de requerimientos más abajo) deben declararse ANTES de
+# "/{client_id}" para que FastAPI no las intercepte con el handler dinámico.
+
+async def _actualizar_avanzada(client_id: str, cambios: dict) -> AvanzadaOut:
+    """Núcleo compartido de actualización de Avanzada: valida existencia,
+    aplica ``cambios`` (diff parcial para PATCH, payload completo para PUT),
+    bump de ``updated_at`` e invalidación de caches.
+
+    Compartir este núcleo entre PATCH y PUT es la Decisión de diseño #3:
+    PUT es un alias delgado del PATCH, no una implementación duplicada.
+    """
+    avanzada_ref = db.collection("avanzadas").document(client_id)
+    doc = avanzada_ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
+
+    cambios["updated_at"] = now_colombia().isoformat()
+    avanzada_ref.update(cambios)
+    _invalidar_cache_estadisticas()
+    _invalidar_cache_geo()
+
+    return _avanzada_existente_a_out(avanzada_ref.get())
+
+
+@router.patch(
+    "/{client_id}",
+    summary="🟡 PATCH | Actualizar Avanzada Diagnóstica (parcial)",
+    response_model=AvanzadaOut,
+)
+async def actualizar_avanzada_parcial(
+    client_id: str,
+    payload: AvanzadaPatchIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """Actualización parcial: solo se aplican los campos efectivamente
+    enviados en el body."""
+    cambios = payload.model_dump(exclude_unset=True)
+    return await _actualizar_avanzada(client_id, cambios)
+
+
+@router.put(
+    "/{client_id}",
+    summary="🟡 PUT | Reemplazar Avanzada Diagnóstica (completo)",
+    response_model=AvanzadaOut,
+)
+async def reemplazar_avanzada(
+    client_id: str,
+    payload: AvanzadaPutIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """Reemplazo completo: los campos opcionales omitidos vuelven al default
+    del schema (ver ``AvanzadaPutIn``). Alias delgado sobre el mismo núcleo
+    que PATCH (Decisión de diseño #3)."""
+    cambios = payload.model_dump()
+    return await _actualizar_avanzada(client_id, cambios)
+
+
+# ==================== ELIMINAR AVANZADA (cascada dura) ====================
+
+@router.delete(
+    "/{client_id}",
+    summary="🔴 DELETE | Eliminar Avanzada Diagnóstica (cascada)",
+    status_code=204,
+)
+async def eliminar_avanzada(
+    client_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Elimina la avanzada, todos sus requerimientos (``avanzadas_requerimientos``
+    con ``avanzada_client_id == client_id``) y sus objetos S3 asociados
+    (borrado por prefijo ``avanzadas/{client_id}/``).
+
+    Cascada dura (no soft-delete): Decisión de diseño #4 -- los
+    requerimientos son propiedad exclusiva de la avanzada, y no existe un
+    patrón de soft-delete en el resto del código.
+    """
+    avanzada_ref = db.collection("avanzadas").document(client_id)
+    doc = avanzada_ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
+
+    req_docs = (
+        db.collection("avanzadas_requerimientos")
+        .where("avanzada_client_id", "==", client_id)
+        .get()
+    )
+    for req_doc in req_docs:
+        db.collection("avanzadas_requerimientos").document(req_doc.id).delete()
+
+    avanzada_ref.delete()
+
+    try:
+        s3_client = get_s3_client()
+        s3_storage.delete_prefix(
+            f"avanzadas/{client_id}/",
+            s3_client=s3_client,
+            bucket=s3_storage.bucket_name(),
+        )
+    except Exception:
+        # Borrado de S3 es best-effort: no bloquear la eliminación en
+        # Firestore por un problema de credenciales/red con S3.
+        pass
+
+    _invalidar_cache_estadisticas()
+    _invalidar_cache_geo()
+
+    return Response(status_code=204)
 
 
 # ==================== DETALLE DE AVANZADA ====================
