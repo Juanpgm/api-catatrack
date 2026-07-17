@@ -1437,6 +1437,288 @@ async def eliminar_avanzada(
     return Response(status_code=204)
 
 
+# ==================== SUB-RECURSO: REQUERIMIENTOS DE AVANZADA ====================
+
+@router.post(
+    "/{client_id}/requerimientos",
+    summary="🟢 POST | Agregar Requerimiento a Avanzada",
+    response_model=RequerimientoAvanzadaOut,
+    status_code=201,
+)
+async def crear_requerimiento_avanzada(
+    client_id: str,
+    request: Request,
+    datos: str = Form(..., description="Datos del requerimiento en formato JSON (ver RequerimientoAvanzadaIn)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Crea un requerimiento suelto dentro de una avanzada existente (fuera
+    del flujo de creación inline de ``POST /avanzadas``).
+
+    El ``req_index`` asignado es ``max(req_index existentes) + 1`` (nunca
+    ``len(...)``, ver Decisión de diseño #5): así nunca colisiona con un
+    índice liberado por un DELETE previo.
+    """
+    avanzada_ref = db.collection("avanzadas").document(client_id)
+    avanzada_doc = avanzada_ref.get()
+    if not avanzada_doc.exists:
+        raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
+
+    try:
+        parsed = json.loads(datos)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Formato de 'datos' inválido. Debe ser un JSON válido: {str(e)}",
+        )
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="'datos' debe ser un objeto JSON")
+    try:
+        req_in = RequerimientoAvanzadaIn(**parsed)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+    form = await request.form()
+    archivos = [f for f in form.getlist("fotos") if getattr(f, "filename", None)]
+    archivos = archivos[:_MAX_FOTOS_POR_REQUERIMIENTO]
+
+    req_index = _siguiente_req_index(client_id)
+
+    fotos_urls: List[str] = []
+    if archivos:
+        try:
+            s3_client = get_s3_client()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
+        bucket = s3_storage.bucket_name()
+        try:
+            for archivo in archivos:
+                contenido = await archivo.read()
+                if not contenido:
+                    continue
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="avanzadas",
+                    client_id=client_id,
+                    categoria=f"requerimientos/{req_index}",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket,
+                )
+                fotos_urls.append(subida["s3_url"])
+        except Exception:
+            raise HTTPException(status_code=502, detail="Error subiendo fotos a almacenamiento externo")
+
+    avanzada_data = avanzada_doc.to_dict() or {}
+    now = now_colombia().isoformat()
+    req_data = {
+        "avanzada_client_id": client_id,
+        "jornada_client_id": None,
+        "origen": "avanzada",
+        "req_index": req_index,
+        "entidad": req_in.entidad,
+        "categoria": req_in.categoria,
+        "categoria_personalizada": req_in.categoria_personalizada,
+        "requerimiento": req_in.requerimiento,
+        "ubicacion": req_in.ubicacion,
+        "coordenadas": req_in.coordenadas,
+        "fotos_urls": fotos_urls,
+        "fecha": avanzada_data.get("fecha", ""),
+        "nombre_avanzada": avanzada_data.get("nombre_avanzada", ""),
+        "nombre_origen": avanzada_data.get("nombre_avanzada", ""),
+        "estrategia": avanzada_data.get("estrategia", ""),
+        "created_at": now,
+    }
+    req_doc_id = f"{client_id}_{req_index}"
+    req_ref = db.collection("avanzadas_requerimientos").document(req_doc_id)
+    req_ref.set(req_data)
+    req_data["id"] = req_doc_id
+
+    if req_in.categoria_personalizada and req_in.categoria_personalizada.strip():
+        _upsert_categoria_personalizada(
+            entidad_sigla=_sigla_entidad(req_in.entidad),
+            categoria=req_in.categoria_personalizada.strip(),
+            fecha=avanzada_data.get("fecha", ""),
+        )
+
+    avanzada_ref.update({
+        "requerimientos_count": avanzada_data.get("requerimientos_count", 0) + 1,
+        "updated_at": now,
+    })
+    _invalidar_cache_estadisticas()
+    _invalidar_cache_geo()
+
+    return RequerimientoAvanzadaOut(**req_data)
+
+
+@router.get(
+    "/{client_id}/requerimientos/{req_id}",
+    summary="🔵 GET | Detalle de Requerimiento de Avanzada",
+    response_model=RequerimientoAvanzadaOut,
+)
+async def obtener_requerimiento_avanzada(
+    client_id: str,
+    req_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    doc = db.collection("avanzadas_requerimientos").document(req_id).get()
+    if not doc.exists or (doc.to_dict() or {}).get("avanzada_client_id") != client_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Requerimiento '{req_id}' no encontrado en avanzada '{client_id}'",
+        )
+    return RequerimientoAvanzadaOut(**_requerimiento_doc_to_out(doc))
+
+
+@router.patch(
+    "/{client_id}/requerimientos/{req_id}",
+    summary="🟡 PATCH | Actualizar Requerimiento de Avanzada",
+    response_model=RequerimientoAvanzadaOut,
+)
+async def actualizar_requerimiento_avanzada(
+    client_id: str,
+    req_id: str,
+    request: Request,
+    datos: str = Form("{}", description="Campos a actualizar en formato JSON (ver RequerimientoAvanzadaPatchIn)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Actualización parcial de un requerimiento, incluyendo agregar fotos
+    nuevas (campo multipart ``fotos``) y/o eliminar fotos existentes
+    (``fotos_eliminar`` en ``datos``, con las URLs a remover)."""
+    req_ref = db.collection("avanzadas_requerimientos").document(req_id)
+    doc = req_ref.get()
+    data_actual = doc.to_dict() or {}
+    if not doc.exists or data_actual.get("avanzada_client_id") != client_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Requerimiento '{req_id}' no encontrado en avanzada '{client_id}'",
+        )
+
+    try:
+        parsed = json.loads(datos)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Formato de 'datos' inválido. Debe ser un JSON válido: {str(e)}",
+        )
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="'datos' debe ser un objeto JSON")
+    try:
+        patch_in = RequerimientoAvanzadaPatchIn(**parsed)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+    cambios = patch_in.model_dump(exclude_unset=True, exclude={"fotos_eliminar"})
+
+    fotos_urls = list(data_actual.get("fotos_urls", []))
+    eliminadas = patch_in.fotos_eliminar or []
+    fotos_tocadas = False
+    if eliminadas:
+        keys_a_borrar = [k for k in (_s3_key_from_url(u) for u in eliminadas) if k]
+        if keys_a_borrar:
+            try:
+                s3_client = get_s3_client()
+                s3_storage.delete_keys(
+                    keys_a_borrar, s3_client=s3_client, bucket=s3_storage.bucket_name()
+                )
+            except Exception:
+                pass
+        fotos_urls = [u for u in fotos_urls if u not in eliminadas]
+        fotos_tocadas = True
+
+    form = await request.form()
+    nuevas_fotos = [f for f in form.getlist("fotos") if getattr(f, "filename", None)]
+    if nuevas_fotos:
+        espacio_disponible = max(0, _MAX_FOTOS_POR_REQUERIMIENTO - len(fotos_urls))
+        try:
+            s3_client = get_s3_client()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
+        bucket = s3_storage.bucket_name()
+        req_index = data_actual.get("req_index", 0)
+        try:
+            for archivo in nuevas_fotos[:espacio_disponible]:
+                contenido = await archivo.read()
+                if not contenido:
+                    continue
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="avanzadas",
+                    client_id=client_id,
+                    categoria=f"requerimientos/{req_index}",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket,
+                )
+                fotos_urls.append(subida["s3_url"])
+        except Exception:
+            raise HTTPException(status_code=502, detail="Error subiendo fotos a almacenamiento externo")
+        fotos_tocadas = True
+
+    if fotos_tocadas:
+        cambios["fotos_urls"] = fotos_urls
+
+    if cambios:
+        req_ref.update(cambios)
+
+    _invalidar_cache_estadisticas()
+    _invalidar_cache_geo()
+
+    return RequerimientoAvanzadaOut(**_requerimiento_doc_to_out(req_ref.get()))
+
+
+@router.delete(
+    "/{client_id}/requerimientos/{req_id}",
+    summary="🔴 DELETE | Eliminar Requerimiento de Avanzada",
+    status_code=204,
+)
+async def eliminar_requerimiento_avanzada(
+    client_id: str,
+    req_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Elimina el requerimiento, sus objetos S3 asociados (borrado por
+    prefijo ``avanzadas/{client_id}/requerimientos/{req_index}/``) y
+    decrementa ``requerimientos_count`` de la avanzada padre."""
+    req_ref = db.collection("avanzadas_requerimientos").document(req_id)
+    doc = req_ref.get()
+    data_actual = doc.to_dict() or {}
+    if not doc.exists or data_actual.get("avanzada_client_id") != client_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Requerimiento '{req_id}' no encontrado en avanzada '{client_id}'",
+        )
+
+    req_index = data_actual.get("req_index", 0)
+    req_ref.delete()
+
+    try:
+        s3_client = get_s3_client()
+        s3_storage.delete_prefix(
+            f"avanzadas/{client_id}/requerimientos/{req_index}/",
+            s3_client=s3_client,
+            bucket=s3_storage.bucket_name(),
+        )
+    except Exception:
+        pass
+
+    avanzada_ref = db.collection("avanzadas").document(client_id)
+    avanzada_doc = avanzada_ref.get()
+    if avanzada_doc.exists:
+        avanzada_data = avanzada_doc.to_dict() or {}
+        nuevo_conteo = max(0, avanzada_data.get("requerimientos_count", 1) - 1)
+        avanzada_ref.update({
+            "requerimientos_count": nuevo_conteo,
+            "updated_at": now_colombia().isoformat(),
+        })
+
+    _invalidar_cache_estadisticas()
+    _invalidar_cache_geo()
+
+    return Response(status_code=204)
+
+
 # ==================== DETALLE DE AVANZADA ====================
 
 @router.get(

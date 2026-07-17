@@ -731,3 +731,214 @@ def test_delete_avanzada_invalida_caches(client, fake_db):
     assert avanzadas_routes._estadisticas_cache is None
     assert avanzadas_routes._geo_cache is None
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# POST /avanzadas/{client_id}/requerimientos — sub-recurso standalone
+# ──────────────────────────────────────────────────────────────────────────
+
+def _requerimiento_payload(**overrides) -> dict:
+    payload = {
+        "entidad": "DAGMA - Departamento Administrativo de Gestión del Medio Ambiente",
+        "categoria": "Poda de árboles (autorización)",
+        "categoria_personalizada": None,
+        "requerimiento": "Otro requerimiento distinto",
+        "ubicacion": "Otra ubicación",
+        "coordenadas": "3.0, -76.0",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _post_requerimiento(client: TestClient, client_id: str, payload: dict, files=None):
+    return client.post(
+        f"/avanzadas/{client_id}/requerimientos",
+        data={"datos": json.dumps(payload)},
+        files=files or [],
+    )
+
+
+def test_post_requerimiento_standalone_usa_max_mas_uno(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-req"))  # crea req_index 0 inline
+
+    response = _post_requerimiento(client, "cid-req", _requerimiento_payload())
+    assert response.status_code == 201
+    body = response.json()
+
+    assert body["req_index"] == 1
+    assert body["id"] == "cid-req_1"
+    assert body["avanzada_client_id"] == "cid-req"
+    assert body["entidad"].startswith("DAGMA")
+    assert body["fotos_urls"] == []
+
+
+def test_post_requerimiento_avanzada_no_encontrada(client):
+    response = _post_requerimiento(client, "no-existe", _requerimiento_payload())
+    assert response.status_code == 404
+
+
+def test_post_requerimiento_incrementa_requerimientos_count(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-req-count"))
+    _post_requerimiento(client, "cid-req-count", _requerimiento_payload())
+
+    detalle = client.get("/avanzadas/cid-req-count").json()
+    assert detalle["requerimientos_count"] == 2
+    assert len(detalle["requerimientos"]) == 2
+
+
+def test_post_requerimiento_rechaza_payload_invalido(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-req-invalido"))
+    payload = _requerimiento_payload(entidad="")
+
+    response = _post_requerimiento(client, "cid-req-invalido", payload)
+    assert response.status_code == 422
+
+
+def test_post_requerimiento_sube_fotos(client, fake_db, fake_s3):
+    _post_avanzada(client, _valid_datos(client_id="cid-req-fotos"))
+    files = [("fotos", ("foto1.jpg", b"foto1-bytes", "image/jpeg"))]
+
+    response = _post_requerimiento(client, "cid-req-fotos", _requerimiento_payload(), files=files)
+    assert response.status_code == 201
+    assert len(response.json()["fotos_urls"]) == 1
+    assert len(fake_s3.uploaded) == 1
+
+
+def test_post_requerimiento_no_colisiona_tras_borrar_indice_intermedio(client, fake_db):
+    """Invariante de la Decisión de diseño #5: usar max(existentes)+1 (y no
+    len(existentes)) importa quando se borra un índice INTERMEDIO, no el
+    último. Secuencia: idx0 (inline), idx1 y idx2 (standalone) -> borrar
+    idx1 (queda [0, 2], len=2 pero max=2) -> el próximo:
+    - con len(): asignaría 2 -> COLISIONA con el idx2 que sigue vivo.
+    - con max()+1: asigna 3 -> sin colisión.
+    """
+    _post_avanzada(client, _valid_datos(client_id="cid-maxplus1"))  # req_index 0
+
+    r1 = _post_requerimiento(client, "cid-maxplus1", _requerimiento_payload())
+    assert r1.json()["req_index"] == 1
+    req_id_1 = r1.json()["id"]
+
+    r2 = _post_requerimiento(client, "cid-maxplus1", _requerimiento_payload())
+    assert r2.json()["req_index"] == 2
+
+    delete_resp = client.delete(f"/avanzadas/cid-maxplus1/requerimientos/{req_id_1}")
+    assert delete_resp.status_code == 204
+
+    r3 = _post_requerimiento(client, "cid-maxplus1", _requerimiento_payload())
+    assert r3.json()["req_index"] == 3
+    assert r3.json()["id"] == "cid-maxplus1_3"
+
+    # El idx2 preexistente sigue intacto -- no fue pisado por una colisión.
+    detalle = client.get("/avanzadas/cid-maxplus1").json()
+    indices = sorted(r["req_index"] for r in detalle["requerimientos"])
+    assert indices == [0, 2, 3]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GET /avanzadas/{client_id}/requerimientos/{req_id}
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_get_requerimiento_encontrado(client, fake_db):
+    created = _post_avanzada(client, _valid_datos(client_id="cid-get")).json()
+    req_id = created["requerimientos"][0]["id"]
+
+    response = client.get(f"/avanzadas/cid-get/requerimientos/{req_id}")
+    assert response.status_code == 200
+    assert response.json()["id"] == req_id
+
+
+def test_get_requerimiento_no_encontrado(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-get2"))
+
+    response = client.get("/avanzadas/cid-get2/requerimientos/nope")
+    assert response.status_code == 404
+
+
+def test_get_requerimiento_no_pertenece_a_otra_avanzada(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-a"))
+    _post_avanzada(client, _valid_datos(client_id="cid-b"))
+
+    response = client.get("/avanzadas/cid-b/requerimientos/cid-a_0")
+    assert response.status_code == 404
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PATCH /avanzadas/{client_id}/requerimientos/{req_id}
+# ──────────────────────────────────────────────────────────────────────────
+
+def _patch_requerimiento(client: TestClient, client_id: str, req_id: str, datos: dict, files=None):
+    return client.patch(
+        f"/avanzadas/{client_id}/requerimientos/{req_id}",
+        data={"datos": json.dumps(datos)},
+        files=files or [],
+    )
+
+
+def test_patch_requerimiento_actualiza_parcial(client, fake_db):
+    created = _post_avanzada(client, _valid_datos(client_id="cid-patchreq")).json()
+    req_id = created["requerimientos"][0]["id"]
+
+    response = _patch_requerimiento(client, "cid-patchreq", req_id, {"categoria": "Nueva Categoria"})
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["categoria"] == "Nueva Categoria"
+    assert body["requerimiento"] == "Árbol caído bloquea la vía"
+
+
+def test_patch_requerimiento_no_encontrado(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-patchreq2"))
+
+    response = _patch_requerimiento(client, "cid-patchreq2", "nope", {"categoria": "X"})
+    assert response.status_code == 404
+
+
+def test_patch_requerimiento_agrega_fotos(client, fake_db, fake_s3):
+    created = _post_avanzada(client, _valid_datos(client_id="cid-fotoadd")).json()
+    req_id = created["requerimientos"][0]["id"]
+    files = [("fotos", ("nueva.jpg", b"nueva-bytes", "image/jpeg"))]
+
+    response = _patch_requerimiento(client, "cid-fotoadd", req_id, {}, files=files)
+    assert response.status_code == 200
+    assert len(response.json()["fotos_urls"]) == 1
+    assert len(fake_s3.uploaded) == 1
+
+
+def test_patch_requerimiento_elimina_fotos(client, fake_db, fake_s3):
+    files = [("fotos_req_0", ("foto1.jpg", b"foto1-bytes", "image/jpeg"))]
+    created = _post_avanzada(client, _valid_datos(client_id="cid-fotodel"), files=files).json()
+    req = created["requerimientos"][0]
+    req_id = req["id"]
+    url_a_borrar = req["fotos_urls"][0]
+
+    response = _patch_requerimiento(
+        client, "cid-fotodel", req_id, {"fotos_eliminar": [url_a_borrar]}
+    )
+    assert response.status_code == 200
+    assert response.json()["fotos_urls"] == []
+    assert url_a_borrar.split(".amazonaws.com/", 1)[1] in fake_s3.deleted
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# DELETE /avanzadas/{client_id}/requerimientos/{req_id}
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_delete_requerimiento_cascada_s3_y_decrementa_count(client, fake_db, fake_s3):
+    files = [("fotos_req_0", ("foto1.jpg", b"foto1-bytes", "image/jpeg"))]
+    created = _post_avanzada(client, _valid_datos(client_id="cid-delreq"), files=files).json()
+    req_id = created["requerimientos"][0]["id"]
+    assert created["requerimientos_count"] == 1
+
+    response = client.delete(f"/avanzadas/cid-delreq/requerimientos/{req_id}")
+    assert response.status_code == 204
+
+    assert fake_db.collection("avanzadas_requerimientos").document(req_id).get().exists is False
+    avanzada = client.get("/avanzadas/cid-delreq").json()
+    assert avanzada["requerimientos_count"] == 0
+    assert len(fake_s3.deleted) == 1
+
+
+def test_delete_requerimiento_no_encontrado(client, fake_db):
+    _post_avanzada(client, _valid_datos(client_id="cid-delreq2"))
+
+    response = client.delete("/avanzadas/cid-delreq2/requerimientos/nope")
+    assert response.status_code == 404
