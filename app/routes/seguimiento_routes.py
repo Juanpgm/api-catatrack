@@ -2,7 +2,7 @@
 Rutas para el módulo de Seguimiento de Requerimientos (Kanban)
 Flujo: Programar Visita → Registrar Requerimientos → Gestión Kanban
 """
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, File, Form, UploadFile
 from fastapi.responses import Response
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
@@ -12,6 +12,9 @@ import uuid
 from app.firebase_config import db
 from app.auth_system.dependencies import get_current_user
 from app.utils.pdf_generator import generar_reporte_visita
+# Módulo unificado de S3 (single source: credenciales, bucket, key format,
+# upload/delete/list/presign).
+from app.utils import s3_storage
 
 router = APIRouter(prefix="/seguimiento", tags=["Seguimiento de Requerimientos"])
 
@@ -434,6 +437,54 @@ async def crear_requerimiento(
         return req_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creando requerimiento: {str(e)}")
+
+
+@router.post(
+    "/evidencias",
+    summary="📷 POST | Subir evidencias fotográficas de Seguimiento",
+    status_code=201,
+)
+async def subir_evidencias(
+    archivos: List[UploadFile] = File(...),
+    requerimiento_id: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Sube uno o más archivos de evidencia a S3 (módulo ``seguimiento``) y
+    retorna la lista de resultados (``s3_url``, ``s3_key``, ``filename``,
+    ``content_type``, ``size``) vía ``app.utils.s3_storage``.
+
+    Reemplaza el flujo legacy del Kanban que llamaba a
+    ``/registrar-requerimiento`` del artefacto de captura DAGMA solo
+    para subir fotos.
+    """
+    try:
+        s3_client = s3_storage.get_s3_client()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
+
+    client_id = requerimiento_id or "general"
+    resultados = []
+    try:
+        for archivo in archivos:
+            contenido = await archivo.read()
+            if not contenido:
+                continue
+            resultados.append(
+                s3_storage.upload_file(
+                    contenido,
+                    modulo="seguimiento",
+                    client_id=client_id,
+                    categoria="evidencias",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                )
+            )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Error subiendo evidencias a almacenamiento externo")
+
+    return resultados
 
 
 @router.patch(
