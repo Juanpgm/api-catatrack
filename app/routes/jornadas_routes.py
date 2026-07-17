@@ -883,6 +883,25 @@ def _parse_verificacion_payload(datos: str) -> VerificacionIn:
         raise HTTPException(status_code=422, detail=e.errors(include_url=False, include_context=False))
 
 
+def _siguiente_offset_requerimientos_jornada(client_id: str) -> int:
+    """Como ``avanzadas_routes._siguiente_req_index`` pero para el lado de
+    Jornadas Integrales: el offset desde el que continúa la numeración de
+    un guardado incremental de requerimientos es ``max(req_index
+    existentes) + 1`` (nunca ``len(...)``, ver Decisión de diseño #5 y su
+    Open Question -- Jornada usaba el mismo offset "buggy" que Avanzada
+    antes de la Parte 2 de este feature). ``len()`` reutilizaría un índice
+    liberado por un requerimiento borrado, colisionando con uno que sigue
+    vivo con un índice mayor.
+    """
+    docs = (
+        db.collection("avanzadas_requerimientos")
+        .where("jornada_client_id", "==", client_id)
+        .get()
+    )
+    indices = [(d.to_dict() or {}).get("req_index", -1) for d in docs]
+    return (max(indices) + 1) if indices else 0
+
+
 def _parse_requerimientos_jornada_payload(datos: str) -> RequerimientosJornadaPayloadIn:
     try:
         parsed = json.loads(datos)
@@ -1481,13 +1500,10 @@ async def crear_requerimientos_jornada(
     # requerimientos), así que la numeración continúa donde quedaron los
     # ya existentes -- si arrancara siempre en 0 el id determinístico
     # "{client_id}_{idx}" colisionaría con uno ya guardado en una llamada
-    # anterior.
-    existentes = (
-        db.collection("avanzadas_requerimientos")
-        .where("jornada_client_id", "==", client_id)
-        .get()
-    )
-    offset = len(existentes)
+    # anterior. Se usa max(existentes)+1, no len(existentes) (Decisión de
+    # diseño #5): len() reutilizaría un índice liberado por un
+    # requerimiento borrado.
+    offset = _siguiente_offset_requerimientos_jornada(client_id)
 
     now = now_colombia().isoformat()
     creados: List[dict] = []

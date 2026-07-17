@@ -243,6 +243,48 @@ def test_crear_requerimientos_jornada_continua_numeracion_incremental(client, fa
     assert ids == ["jor_incremental_0", "jor_incremental_1"]
 
 
+def test_crear_requerimientos_jornada_no_colisiona_tras_borrar_indice_intermedio(client, fake_db):
+    """Invariante de la Decisión de diseño #5, aplicada también del lado
+    de Jornadas Integrales (ver Open Question de design.md): el próximo
+    ``req_index`` debe ser ``max(existentes) + 1``, no ``len(existentes)``.
+    Secuencia: idx0, idx1, idx2 -> se borra el idx1 INTERMEDIO (queda
+    [0, 2], len=2 pero max=2) -> el próximo:
+    - con len(): asignaría 2 -> COLISIONA con el idx2 que sigue vivo
+      (pisaría su documento).
+    - con max()+1: asigna 3 -> sin colisión.
+
+    No existe todavía un endpoint DELETE de requerimiento individual del
+    lado de Jornadas, así que el borrado del índice intermedio se simula
+    manipulando directamente el fake_db (mismo criterio que el resto de
+    los tests de este módulo).
+    """
+    _crear_jornada_http(client, client_id="jor_maxplus1")
+    _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 0", "ubicacion": "U0"},
+    ])
+    _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 1", "ubicacion": "U1"},
+    ])
+    r3 = _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 2", "ubicacion": "U2"},
+    ])
+    assert r3.json()["requerimientos"][0]["req_index"] == 2
+
+    fake_db.collection("avanzadas_requerimientos").document("jor_maxplus1_1").delete()
+
+    r4 = _post_requerimientos_jornada(client, "jor_maxplus1", [
+        {"entidad": "DAGMA - Depto", "requerimiento": "Req 3", "ubicacion": "U3"},
+    ])
+    assert r4.status_code == 201
+    creado = r4.json()["requerimientos"][0]
+    assert creado["req_index"] == 3
+    assert creado["id"] == "jor_maxplus1_3"
+
+    # El idx2 preexistente sigue intacto -- no fue pisado por una colisión.
+    ids = sorted(d.id for d in fake_db.collection("avanzadas_requerimientos").stream())
+    assert ids == ["jor_maxplus1_0", "jor_maxplus1_2", "jor_maxplus1_3"]
+
+
 def test_crear_requerimientos_jornada_upsert_categoria_personalizada(client, fake_db):
     _crear_jornada_http(client, client_id="jor_cat")
     response = _post_requerimientos_jornada(client, "jor_cat", [
