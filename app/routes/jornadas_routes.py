@@ -23,7 +23,6 @@ import copy
 import json
 import os
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -32,12 +31,15 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.auth_system.dependencies import get_current_user
 from app.firebase_config import db
-# Reutilizamos helpers de avanzadas_routes (S3, sigla de entidad, upsert de
+# Reutilizamos helpers de avanzadas_routes (sigla de entidad, upsert de
 # categorías personalizadas, agrupado de fotos por índice) en vez de
 # duplicarlos: Jornadas Integrales comparte la colección
 # 'avanzadas_requerimientos' y el catálogo de categorías con Avanzadas
 # Diagnósticas (ver Parte 2 del módulo, más abajo).
 from app.routes import avanzadas_routes
+# Módulo unificado de S3 (single source: credenciales, bucket, key format,
+# upload/delete/list/presign).
+from app.utils import s3_storage
 
 router = APIRouter(prefix="/jornadas", tags=["Jornadas Integrales"])
 
@@ -1000,16 +1002,24 @@ async def subir_croquis_jornada(
     if not contenido:
         raise HTTPException(status_code=422, detail="El archivo de croquis está vacío")
 
-    bucket_name = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
+    bucket_name = s3_storage.bucket_name()
     try:
         s3_client = avanzadas_routes.get_s3_client()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
 
-    safe_name = avanzadas_routes._safe_filename(foto.filename)
-    s3_key = f"jornadas/{client_id}/croquis/{uuid.uuid4().hex}_{safe_name}"
     try:
-        url = avanzadas_routes._upload_foto(s3_client, bucket_name, s3_key, contenido, foto.content_type)
+        subida = s3_storage.upload_file(
+            contenido,
+            modulo="jornadas",
+            client_id=client_id,
+            categoria="croquis",
+            filename=foto.filename,
+            content_type=foto.content_type,
+            s3_client=s3_client,
+            bucket=bucket_name,
+        )
+        url = subida["s3_url"]
     except Exception:
         raise HTTPException(status_code=502, detail="Error subiendo croquis a almacenamiento externo")
 
@@ -1217,7 +1227,7 @@ async def actualizar_verificacion_compromiso(
 
     fotos_urls: List[str] = []
     if archivos:
-        bucket_name = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
+        bucket_name = s3_storage.bucket_name()
         try:
             s3_client = avanzadas_routes.get_s3_client()
         except Exception as e:
@@ -1228,11 +1238,17 @@ async def actualizar_verificacion_compromiso(
                 contenido = await archivo.read()
                 if not contenido:
                     continue
-                safe_name = avanzadas_routes._safe_filename(archivo.filename)
-                s3_key = f"jornadas/compromisos/{client_id}/verificacion/{uuid.uuid4().hex}_{safe_name}"
-                fotos_urls.append(
-                    avanzadas_routes._upload_foto(s3_client, bucket_name, s3_key, contenido, archivo.content_type)
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="jornadas",
+                    client_id=client_id,
+                    categoria="compromisos/verificacion",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket_name,
                 )
+                fotos_urls.append(subida["s3_url"])
         except Exception:
             raise HTTPException(status_code=502, detail="Error subiendo fotos de verificación a almacenamiento externo")
 
@@ -1338,7 +1354,7 @@ async def crear_requerimientos_jornada(
     form = await request.form()
     fotos_por_requerimiento = avanzadas_routes._agrupar_fotos_por_requerimiento(form)
 
-    bucket_name = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
+    bucket_name = s3_storage.bucket_name()
     s3_client = None
     if fotos_por_requerimiento:
         try:
@@ -1355,11 +1371,17 @@ async def crear_requerimientos_jornada(
                 contenido = await archivo.read()
                 if not contenido:
                     continue
-                safe_name = avanzadas_routes._safe_filename(archivo.filename)
-                s3_key = f"jornadas/{client_id}/requerimientos/{idx}/{uuid.uuid4().hex}_{safe_name}"
-                fotos_urls.append(
-                    avanzadas_routes._upload_foto(s3_client, bucket_name, s3_key, contenido, archivo.content_type)
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="jornadas",
+                    client_id=client_id,
+                    categoria=f"requerimientos/{idx}",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket_name,
                 )
+                fotos_urls.append(subida["s3_url"])
             requerimientos_fotos_urls[idx] = fotos_urls
     except Exception:
         raise HTTPException(status_code=502, detail="Error subiendo fotos a almacenamiento externo")

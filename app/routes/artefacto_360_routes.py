@@ -20,9 +20,11 @@ from faster_whisper import WhisperModel
 
 # Importar configuración de Firebase y S3/Storage
 from app.firebase_config import db
-import boto3
-from botocore.exceptions import ClientError
-from botocore.config import Config as BotoConfig
+
+# Módulo unificado de S3 (single source: credenciales, bucket, key format).
+# Re-exportado aquí por compatibilidad con código que aún importa
+# get_s3_client desde este módulo.
+from app.utils.s3_storage import get_s3_client
 
 # Clasificador automático de centros gestores (organismos_encargados)
 from app.classification import clasificar_centros_gestores
@@ -159,29 +161,6 @@ def validate_photo_file(file: UploadFile) -> bool:
         raise ValueError(f"Extensión no permitida: {file_ext}")
     
     return True
-
-
-def get_s3_client():
-    """
-    Crear cliente de S3 con las credenciales del entorno
-    """
-    from dotenv import load_dotenv
-    load_dotenv(override=True)
-
-    aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
-    aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-    aws_region = os.getenv('AWS_REGION', 'us-east-2')
-    
-    if not aws_access_key or not aws_secret_key:
-        raise ValueError("Credenciales de AWS no configuradas. Verifica AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY")
-    
-    return boto3.client(
-        's3',
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key,
-        region_name=aws_region,
-        config=BotoConfig(signature_version='s3v4')
-    )
 
 
 def _listar_documentos_s3(vid: str, rid: str, s3_client=None, expiration: int = 3600) -> list:

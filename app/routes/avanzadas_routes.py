@@ -23,7 +23,6 @@ import json
 import os
 import re
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
@@ -39,9 +38,10 @@ from app.data.avanzadas_catalogos import (
     ESTRATEGIAS_DEFAULT,
 )
 from app.firebase_config import db
-# Reutilizamos el helper de S3 del artefacto de captura DAGMA en vez de
-# duplicar la configuración de credenciales/bucket.
-from app.routes.artefacto_360_routes import get_s3_client
+# Módulo unificado de S3 (single source: credenciales, bucket, key format,
+# upload/delete/list/presign).
+from app.utils import s3_storage
+from app.utils.s3_storage import get_s3_client
 
 router = APIRouter(prefix="/avanzadas", tags=["Avanzadas Diagnósticas"])
 
@@ -310,20 +310,6 @@ def _parsear_coordenadas(valor) -> Optional[tuple]:
         return None
 
     return (lat, lng)
-
-
-def _safe_filename(filename: str) -> str:
-    return re.sub(r"[^\w.\-]", "_", filename or "archivo")
-
-
-def _upload_foto(s3_client, bucket_name: str, s3_key: str, content: bytes, content_type: Optional[str]) -> str:
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=s3_key,
-        Body=content,
-        ContentType=content_type or "application/octet-stream",
-    )
-    return f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
 
 
 def _requerimiento_doc_to_out(doc) -> dict:
@@ -1016,7 +1002,7 @@ async def crear_avanzada(
     form = await request.form()
     fotos_por_requerimiento = _agrupar_fotos_por_requerimiento(form)
 
-    bucket_name = os.getenv("S3_BUCKET_NAME", "catatrack-photos")
+    bucket_name = s3_storage.bucket_name()
     s3_client = None
     necesita_s3 = bool(foto_equipo and foto_equipo.filename) or bool(fotos_por_requerimiento)
     if necesita_s3:
@@ -1034,9 +1020,17 @@ async def crear_avanzada(
         if foto_equipo and foto_equipo.filename:
             contenido = await foto_equipo.read()
             if contenido:
-                safe_name = _safe_filename(foto_equipo.filename)
-                s3_key = f"avanzadas/{payload.client_id}/equipo/{uuid.uuid4().hex}_{safe_name}"
-                foto_equipo_url = _upload_foto(s3_client, bucket_name, s3_key, contenido, foto_equipo.content_type)
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="avanzadas",
+                    client_id=payload.client_id,
+                    categoria="equipo",
+                    filename=foto_equipo.filename,
+                    content_type=foto_equipo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket_name,
+                )
+                foto_equipo_url = subida["s3_url"]
 
         for idx, req_in in enumerate(payload.requerimientos):
             archivos = fotos_por_requerimiento.get(idx, [])[:_MAX_FOTOS_POR_REQUERIMIENTO]
@@ -1045,9 +1039,17 @@ async def crear_avanzada(
                 contenido = await archivo.read()
                 if not contenido:
                     continue
-                safe_name = _safe_filename(archivo.filename)
-                s3_key = f"avanzadas/{payload.client_id}/requerimientos/{idx}/{uuid.uuid4().hex}_{safe_name}"
-                fotos_urls.append(_upload_foto(s3_client, bucket_name, s3_key, contenido, archivo.content_type))
+                subida = s3_storage.upload_file(
+                    contenido,
+                    modulo="avanzadas",
+                    client_id=payload.client_id,
+                    categoria=f"requerimientos/{idx}",
+                    filename=archivo.filename,
+                    content_type=archivo.content_type,
+                    s3_client=s3_client,
+                    bucket=bucket_name,
+                )
+                fotos_urls.append(subida["s3_url"])
             requerimientos_fotos_urls[idx] = fotos_urls
     except HTTPException:
         raise
