@@ -39,7 +39,18 @@ class FakeDocumentRef:
 
     def update(self, data: dict) -> None:
         existing = self._collection._docs.setdefault(self.id, {})
-        existing.update(data)
+        for key, value in data.items():
+            # Soporte mínimo del sentinel firestore.Increment, que la app
+            # usa para el increment/decrement atómico de
+            # ``requerimientos_count`` (ver avanzadas_routes.py). Se
+            # detecta por duck-typing (atributo ``value``) en vez de
+            # importar el tipo real, para no atar este fake a
+            # google-cloud-firestore.
+            delta = getattr(value, "value", None)
+            if delta is not None and type(value).__name__ == "Increment":
+                existing[key] = existing.get(key, 0) + delta
+            else:
+                existing[key] = value
 
     def delete(self) -> None:
         self._collection._docs.pop(self.id, None)

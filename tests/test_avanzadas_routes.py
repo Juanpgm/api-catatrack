@@ -351,6 +351,17 @@ def test_crear_avanzada_sube_fotos_a_s3(client, fake_s3):
     assert len(fake_s3.uploaded) == 3
 
 
+def test_crear_avanzada_sube_foto_de_asistente(client, fake_s3):
+    files = [("foto_asistente_0", ("asistente.jpg", b"asistente-bytes", "image/jpeg"))]
+    response = _post_avanzada(client, _valid_datos(client_id="cid-foto-asist"), files=files)
+    assert response.status_code == 201
+    body = response.json()
+
+    assert body["asistentes"][0]["foto_url"] is not None
+    assert "cid-foto-asist" in body["asistentes"][0]["foto_url"]
+    assert len(fake_s3.uploaded) == 1
+
+
 def test_crear_avanzada_trunca_a_5_fotos_por_requerimiento(client, fake_s3):
     files = [
         ("fotos_req_0", (f"foto{i}.jpg", f"bytes-{i}".encode(), "image/jpeg"))
@@ -592,6 +603,25 @@ def test_detalle_avanzada_no_encontrada(client):
 # ──────────────────────────────────────────────────────────────────────────
 # PATCH /avanzadas/{client_id} — actualización parcial
 # ──────────────────────────────────────────────────────────────────────────
+# Multipart (no JSON body): mismo contrato "datos" + archivos que
+# POST /avanzadas, para poder adjuntar fotos de asistentes por índice
+# (``foto_asistente_{i}``).
+
+def _patch_avanzada(client: TestClient, client_id: str, datos: dict, files=None):
+    return client.patch(
+        f"/avanzadas/{client_id}",
+        data={"datos": json.dumps(datos)},
+        files=files or [],
+    )
+
+
+def _put_avanzada(client: TestClient, client_id: str, datos: dict, files=None):
+    return client.put(
+        f"/avanzadas/{client_id}",
+        data={"datos": json.dumps(datos)},
+        files=files or [],
+    )
+
 
 def test_patch_avanzada_actualiza_parcial_y_bump_updated_at(client, fake_db, monkeypatch):
     fechas = iter([
@@ -603,7 +633,7 @@ def test_patch_avanzada_actualiza_parcial_y_bump_updated_at(client, fake_db, mon
     created = _post_avanzada(client, _valid_datos(client_id="cid-patch")).json()
     assert created["updated_at"] == "2026-07-15T10:00:00-05:00"
 
-    response = client.patch("/avanzadas/cid-patch", json={"sector": "Nuevo Sector"})
+    response = _patch_avanzada(client, "cid-patch", {"sector": "Nuevo Sector"})
     assert response.status_code == 200
     body = response.json()
 
@@ -615,14 +645,14 @@ def test_patch_avanzada_actualiza_parcial_y_bump_updated_at(client, fake_db, mon
 
 
 def test_patch_avanzada_no_encontrada(client):
-    response = client.patch("/avanzadas/no-existe", json={"sector": "Nuevo Sector"})
+    response = _patch_avanzada(client, "no-existe", {"sector": "Nuevo Sector"})
     assert response.status_code == 404
 
 
 def test_patch_avanzada_validacion_falla_no_modifica_documento(client, fake_db):
     _post_avanzada(client, _valid_datos(client_id="cid-patch-invalido"))
 
-    response = client.patch("/avanzadas/cid-patch-invalido", json={"fecha": 123})
+    response = _patch_avanzada(client, "cid-patch-invalido", {"fecha": 123})
     assert response.status_code == 422
 
     doc = fake_db.collection("avanzadas").document("cid-patch-invalido").get().to_dict()
@@ -636,10 +666,58 @@ def test_patch_avanzada_invalida_caches_de_estadisticas_y_geo(client, fake_db):
     assert avanzadas_routes._estadisticas_cache is not None
     assert avanzadas_routes._geo_cache is not None
 
-    client.patch("/avanzadas/cid-patch-cache", json={"sector": "Otro Sector"})
+    _patch_avanzada(client, "cid-patch-cache", {"sector": "Otro Sector"})
 
     assert avanzadas_routes._estadisticas_cache is None
     assert avanzadas_routes._geo_cache is None
+
+
+def test_patch_avanzada_asistente_sube_foto_y_borra_la_vieja(client, fake_db, fake_s3):
+    created = _post_avanzada(client, _valid_datos(client_id="cid-patch-foto")).json()
+    assert created["asistentes"][0]["foto_url"] is None
+
+    files = [("foto_asistente_0", ("asistente.jpg", b"asistente-bytes", "image/jpeg"))]
+    response = _patch_avanzada(
+        client,
+        "cid-patch-foto",
+        {
+            "asistentes": [
+                {
+                    "nombre": "Juan Pérez",
+                    "organismo": "DAGMA - Departamento Administrativo de Gestión del Medio Ambiente",
+                    "celular": "3001234567",
+                    "correo": "juan@test.com",
+                }
+            ]
+        },
+        files=files,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["asistentes"][0]["foto_url"] is not None
+    assert len(fake_s3.uploaded) == 1
+
+    # Segundo PATCH sin foto nueva para ese índice, pero quitando la URL
+    # (usuario borró la foto): la vieja debe darse de baja en S3.
+    url_vieja = body["asistentes"][0]["foto_url"]
+    response_2 = _patch_avanzada(
+        client,
+        "cid-patch-foto",
+        {
+            "asistentes": [
+                {
+                    "nombre": "Juan Pérez",
+                    "organismo": "DAGMA - Departamento Administrativo de Gestión del Medio Ambiente",
+                    "celular": "3001234567",
+                    "correo": "juan@test.com",
+                    "foto_url": None,
+                }
+            ]
+        },
+    )
+    assert response_2.status_code == 200
+    assert response_2.json()["asistentes"][0]["foto_url"] is None
+    assert url_vieja.split(".amazonaws.com/", 1)[1] in fake_s3.deleted
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -664,7 +742,7 @@ def _put_payload(**overrides) -> dict:
 def test_put_avanzada_reemplaza_completo(client, fake_db):
     _post_avanzada(client, _valid_datos(client_id="cid-put"))
 
-    response = client.put("/avanzadas/cid-put", json=_put_payload())
+    response = _put_avanzada(client, "cid-put", _put_payload())
     assert response.status_code == 200
     body = response.json()
 
@@ -678,7 +756,7 @@ def test_put_avanzada_reemplaza_completo(client, fake_db):
 
 
 def test_put_avanzada_no_encontrada(client):
-    response = client.put("/avanzadas/no-existe", json=_put_payload())
+    response = _put_avanzada(client, "no-existe", _put_payload())
     assert response.status_code == 404
 
 
@@ -687,7 +765,7 @@ def test_put_avanzada_rechaza_campo_obligatorio_faltante(client, fake_db):
     payload = _put_payload()
     del payload["comuna"]
 
-    response = client.put("/avanzadas/cid-put-invalido", json=payload)
+    response = _put_avanzada(client, "cid-put-invalido", payload)
     assert response.status_code == 422
 
 

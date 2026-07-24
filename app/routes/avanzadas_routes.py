@@ -30,6 +30,8 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
+from firebase_admin import firestore
+
 from app.auth_system.dependencies import get_current_user
 from app.data.avanzadas_catalogos import (
     CATEGORIAS_DEFAULT,
@@ -54,6 +56,12 @@ _MAX_FOTOS_POR_REQUERIMIENTO = 5
 
 _FOTO_REQ_FIELD_RE = re.compile(r"^fotos_req_(\d+)$")
 
+# A diferencia de "fotos_req_{i}" (repetible: un requerimiento admite varias
+# fotos), acá es una sola foto por asistente -- de ahí el nombre en singular
+# y que el helper que la usa (``_obtener_fotos_asistentes``) tome un único
+# UploadFile por índice en vez de una lista.
+_FOTO_ASISTENTE_FIELD_RE = re.compile(r"^foto_asistente_(\d+)$")
+
 
 def now_colombia() -> datetime:
     """Retorna la hora actual en zona horaria de Colombia (America/Bogota, UTC-5)."""
@@ -67,6 +75,11 @@ class AsistenteIn(BaseModel):
     organismo: str
     celular: str
     correo: str
+    # Resuelta por el endpoint a partir del multipart ``foto_asistente_{i}``
+    # (ver ``_resolver_asistentes_con_fotos``); lo que llegue acá en el JSON
+    # de ``datos`` es la URL a conservar (o ``None`` si no tiene/se quitó),
+    # salvo que el índice tenga una foto nueva, que la reemplaza.
+    foto_url: Optional[str] = None
 
 
 class RequerimientoAvanzadaIn(BaseModel):
@@ -152,6 +165,7 @@ class AsistenteOut(BaseModel):
     organismo: str
     celular: str
     correo: str
+    foto_url: Optional[str] = None
 
 
 class RequerimientoAvanzadaOut(BaseModel):
@@ -950,7 +964,14 @@ def _upsert_categoria_personalizada(entidad_sigla: str, categoria: str, fecha: s
     _invalidar_cache_catalogos()
 
 
-def _parse_avanzada_payload(datos: str) -> AvanzadaCreateIn:
+def _parse_json_payload(datos: str, modelo):
+    """Parsea el campo multipart ``datos`` (JSON) contra el modelo Pydantic
+    indicado. Común a los tres endpoints que reciben ``datos`` como string
+    JSON (``POST``/``PATCH``/``PUT`` de avanzada): mismo error 422 con el
+    detalle de ``json.JSONDecodeError`` o de ``ValidationError`` en ambos
+    casos, para que el frontend no tenga que distinguir el shape del error
+    según el endpoint.
+    """
     try:
         parsed = json.loads(datos)
     except json.JSONDecodeError as e:
@@ -963,9 +984,13 @@ def _parse_avanzada_payload(datos: str) -> AvanzadaCreateIn:
         raise HTTPException(status_code=422, detail="'datos' debe ser un objeto JSON")
 
     try:
-        return AvanzadaCreateIn(**parsed)
+        return modelo(**parsed)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors())
+
+
+def _parse_avanzada_payload(datos: str) -> AvanzadaCreateIn:
+    return _parse_json_payload(datos, AvanzadaCreateIn)
 
 
 def _agrupar_fotos_por_requerimiento(form) -> Dict[int, list]:
@@ -982,6 +1007,23 @@ def _agrupar_fotos_por_requerimiento(form) -> Dict[int, list]:
         if archivos:
             agrupadas.setdefault(idx, []).extend(archivos)
     return agrupadas
+
+
+def _obtener_fotos_asistentes(form) -> Dict[int, UploadFile]:
+    """Extrae, por índice de asistente, el UploadFile recibido en el campo
+    multipart ``foto_asistente_{i}``. A diferencia de ``fotos_req_{i}``
+    (repetible), acá es una única foto por persona, así que se toma un solo
+    archivo por índice en vez de una lista.
+    """
+    fotos: Dict[int, UploadFile] = {}
+    for key in set(form.keys()):
+        match = _FOTO_ASISTENTE_FIELD_RE.match(key)
+        if not match:
+            continue
+        archivo = form.get(key)
+        if getattr(archivo, "filename", None):
+            fotos[int(match.group(1))] = archivo
+    return fotos
 
 
 def _avanzada_existente_a_out(avanzada_doc) -> AvanzadaOut:
@@ -1083,10 +1125,15 @@ async def crear_avanzada(
 
     form = await request.form()
     fotos_por_requerimiento = _agrupar_fotos_por_requerimiento(form)
+    fotos_por_asistente = _obtener_fotos_asistentes(form)
 
     bucket_name = s3_storage.bucket_name()
     s3_client = None
-    necesita_s3 = bool(foto_equipo and foto_equipo.filename) or bool(fotos_por_requerimiento)
+    necesita_s3 = (
+        bool(foto_equipo and foto_equipo.filename)
+        or bool(fotos_por_requerimiento)
+        or bool(fotos_por_asistente)
+    )
     if necesita_s3:
         try:
             s3_client = get_s3_client()
@@ -1098,6 +1145,7 @@ async def crear_avanzada(
     # queda ningún documento a medio crear que el cliente deba limpiar.
     foto_equipo_url: Optional[str] = None
     requerimientos_fotos_urls: Dict[int, List[str]] = {}
+    asistentes_fotos_urls: Dict[int, str] = {}
     try:
         if foto_equipo and foto_equipo.filename:
             contenido = await foto_equipo.read()
@@ -1133,6 +1181,25 @@ async def crear_avanzada(
                 )
                 fotos_urls.append(subida["s3_url"])
             requerimientos_fotos_urls[idx] = fotos_urls
+
+        for idx, _asistente_in in enumerate(payload.asistentes):
+            archivo = fotos_por_asistente.get(idx)
+            if archivo is None:
+                continue
+            contenido = await archivo.read()
+            if not contenido:
+                continue
+            subida = s3_storage.upload_file(
+                contenido,
+                modulo="avanzadas",
+                client_id=payload.client_id,
+                categoria=f"asistentes/{idx}",
+                filename=archivo.filename,
+                content_type=archivo.content_type,
+                s3_client=s3_client,
+                bucket=bucket_name,
+            )
+            asistentes_fotos_urls[idx] = subida["s3_url"]
     except HTTPException:
         raise
     except Exception:
@@ -1200,7 +1267,15 @@ async def crear_avanzada(
         "direccion": payload.direccion,
         "coordenadas": payload.coordenadas,
         "encargados": payload.encargados,
-        "asistentes": [a.model_dump() for a in payload.asistentes],
+        "asistentes": [
+            {
+                **asistente.model_dump(),
+                # La foto recién subida (si la hay para este índice) manda
+                # sobre cualquier ``foto_url`` que haya venido en 'datos'.
+                **({"foto_url": asistentes_fotos_urls[idx]} if idx in asistentes_fotos_urls else {}),
+            }
+            for idx, asistente in enumerate(payload.asistentes)
+        ],
         "foto_equipo_url": foto_equipo_url,
         "created_by": uid,
         "created_at": now,
@@ -1332,18 +1407,108 @@ async def obtener_geo_avanzadas(current_user: dict = Depends(get_current_user)):
 # rutas (y las de requerimientos más abajo) deben declararse ANTES de
 # "/{client_id}" para que FastAPI no las intercepte con el handler dinámico.
 
-async def _actualizar_avanzada(client_id: str, cambios: dict) -> AvanzadaOut:
-    """Núcleo compartido de actualización de Avanzada: valida existencia,
-    aplica ``cambios`` (diff parcial para PATCH, payload completo para PUT),
-    bump de ``updated_at`` e invalidación de caches.
+async def _resolver_asistentes_con_fotos(
+    client_id: str,
+    request: Request,
+    asistentes_nuevos: Optional[List[AsistenteIn]],
+    avanzada_doc,
+) -> Optional[List[dict]]:
+    """Sube las fotos nuevas de asistentes (multipart ``foto_asistente_{i}``,
+    índice-alineado al array ``asistentes`` de ``datos``), arma la lista
+    final de asistentes con su ``foto_url`` resuelta, y da de baja en S3
+    (best-effort) cualquier foto vieja que ya no aparezca en el resultado --
+    mismo patrón de diff que ``fotos_eliminar`` en el PATCH de
+    requerimientos (ver ``actualizar_requerimiento_avanzada``).
+
+    Retorna ``None`` si ``asistentes_nuevos`` es ``None`` (PATCH que no tocó
+    el campo ``asistentes``): sin un array nuevo no hay contra qué alinear
+    las fotos por índice, así que no se toca nada.
+    """
+    if asistentes_nuevos is None:
+        return None
+
+    form = await request.form()
+    fotos_por_indice = _obtener_fotos_asistentes(form)
+
+    bucket_name = s3_storage.bucket_name()
+    s3_client = None
+    if fotos_por_indice:
+        try:
+            s3_client = get_s3_client()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error configurando S3: {str(e)}")
+
+    # Subimos las fotos nuevas ANTES de tocar Firestore (mismo orden que
+    # POST /avanzadas): si una subida falla, la avanzada existente queda
+    # intacta en vez de con un array de asistentes a medio actualizar.
+    asistentes_out: List[dict] = []
+    try:
+        for idx, asistente in enumerate(asistentes_nuevos):
+            data = asistente.model_dump()
+            archivo = fotos_por_indice.get(idx)
+            if archivo is not None:
+                contenido = await archivo.read()
+                if contenido:
+                    subida = s3_storage.upload_file(
+                        contenido,
+                        modulo="avanzadas",
+                        client_id=client_id,
+                        categoria=f"asistentes/{idx}",
+                        filename=archivo.filename,
+                        content_type=archivo.content_type,
+                        s3_client=s3_client,
+                        bucket=bucket_name,
+                    )
+                    data["foto_url"] = subida["s3_url"]
+            asistentes_out.append(data)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="Error subiendo fotos a almacenamiento externo")
+
+    fotos_viejas = {
+        foto_url
+        for a in ((avanzada_doc.to_dict() or {}).get("asistentes") or [])
+        if (foto_url := a.get("foto_url"))
+    }
+    fotos_nuevas = {a["foto_url"] for a in asistentes_out if a.get("foto_url")}
+    fotos_a_borrar = fotos_viejas - fotos_nuevas
+    if fotos_a_borrar:
+        keys_a_borrar = [k for k in (_s3_key_from_url(u) for u in fotos_a_borrar) if k]
+        if keys_a_borrar:
+            try:
+                s3_client_del = s3_client or get_s3_client()
+                s3_storage.delete_keys(
+                    keys_a_borrar, s3_client=s3_client_del, bucket=bucket_name
+                )
+            except Exception:
+                # Borrado de S3 es best-effort (ver mismo patrón en
+                # actualizar_requerimiento_avanzada): no bloquear la
+                # actualización de la avanzada por un problema de S3.
+                pass
+
+    return asistentes_out
+
+
+async def _actualizar_avanzada(client_id: str, cambios: dict, avanzada_ref=None) -> AvanzadaOut:
+    """Núcleo compartido de actualización de Avanzada: valida existencia
+    (salvo que el llamador ya lo haya hecho), aplica ``cambios`` (diff
+    parcial para PATCH, payload completo para PUT), bump de ``updated_at``
+    e invalidación de caches.
 
     Compartir este núcleo entre PATCH y PUT es la Decisión de diseño #3:
     PUT es un alias delgado del PATCH, no una implementación duplicada.
+
+    ``avanzada_ref`` es opcional: PATCH/PUT ya necesitan resolver la
+    referencia (y confirmar que existe) para poder diffear las fotos de
+    asistentes contra el documento actual -- pasarla acá evita repetir esa
+    misma lectura y el mismo chequeo de 404 una segunda vez.
     """
-    avanzada_ref = db.collection("avanzadas").document(client_id)
-    doc = avanzada_ref.get()
-    if not doc.exists:
-        raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
+    if avanzada_ref is None:
+        avanzada_ref = db.collection("avanzadas").document(client_id)
+        doc = avanzada_ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
 
     cambios["updated_at"] = now_colombia().isoformat()
     avanzada_ref.update(cambios)
@@ -1360,13 +1525,29 @@ async def _actualizar_avanzada(client_id: str, cambios: dict) -> AvanzadaOut:
 )
 async def actualizar_avanzada_parcial(
     client_id: str,
-    payload: AvanzadaPatchIn,
+    request: Request,
+    datos: str = Form(..., description="Campos a actualizar en formato JSON (ver AvanzadaPatchIn)"),
     current_user: dict = Depends(get_current_user),
 ):
     """Actualización parcial: solo se aplican los campos efectivamente
-    enviados en el body."""
+    enviados en 'datos'. Multipart (no JSON body) para poder adjuntar, por
+    índice de asistente, una foto nueva vía ``foto_asistente_{i}`` -- mismo
+    patrón que ``datos`` + archivos en ``POST /avanzadas``."""
+    payload = _parse_json_payload(datos, AvanzadaPatchIn)
+
+    avanzada_ref = db.collection("avanzadas").document(client_id)
+    avanzada_doc = avanzada_ref.get()
+    if not avanzada_doc.exists:
+        raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
+
     cambios = payload.model_dump(exclude_unset=True)
-    return await _actualizar_avanzada(client_id, cambios)
+    asistentes_resueltos = await _resolver_asistentes_con_fotos(
+        client_id, request, payload.asistentes, avanzada_doc
+    )
+    if asistentes_resueltos is not None:
+        cambios["asistentes"] = asistentes_resueltos
+
+    return await _actualizar_avanzada(client_id, cambios, avanzada_ref=avanzada_ref)
 
 
 @router.put(
@@ -1376,14 +1557,29 @@ async def actualizar_avanzada_parcial(
 )
 async def reemplazar_avanzada(
     client_id: str,
-    payload: AvanzadaPutIn,
+    request: Request,
+    datos: str = Form(..., description="Datos completos de la avanzada en formato JSON (ver AvanzadaPutIn)"),
     current_user: dict = Depends(get_current_user),
 ):
     """Reemplazo completo: los campos opcionales omitidos vuelven al default
     del schema (ver ``AvanzadaPutIn``). Alias delgado sobre el mismo núcleo
-    que PATCH (Decisión de diseño #3)."""
+    que PATCH (Decisión de diseño #3). Multipart por el mismo motivo que
+    PATCH: adjuntar fotos nuevas de asistentes vía ``foto_asistente_{i}``."""
+    payload = _parse_json_payload(datos, AvanzadaPutIn)
+
+    avanzada_ref = db.collection("avanzadas").document(client_id)
+    avanzada_doc = avanzada_ref.get()
+    if not avanzada_doc.exists:
+        raise HTTPException(status_code=404, detail=f"Avanzada '{client_id}' no encontrada")
+
     cambios = payload.model_dump()
-    return await _actualizar_avanzada(client_id, cambios)
+    asistentes_resueltos = await _resolver_asistentes_con_fotos(
+        client_id, request, payload.asistentes, avanzada_doc
+    )
+    if asistentes_resueltos is not None:
+        cambios["asistentes"] = asistentes_resueltos
+
+    return await _actualizar_avanzada(client_id, cambios, avanzada_ref=avanzada_ref)
 
 
 # ==================== ELIMINAR AVANZADA (cascada dura) ====================
@@ -1595,8 +1791,13 @@ async def crear_requerimiento_avanzada(
             fecha=avanzada_data.get("fecha", ""),
         )
 
+    # Increment atómico de Firestore en vez de leer-y-sumar sobre
+    # 'avanzada_data' (fetcheado al inicio de la request): dos requests
+    # concurrentes agregando un requerimiento a la misma avanzada desde
+    # dispositivos distintos podían pisarse y perder un incremento con el
+    # read-then-write manual.
     avanzada_ref.update({
-        "requerimientos_count": avanzada_data.get("requerimientos_count", 0) + 1,
+        "requerimientos_count": firestore.Increment(1),
         "updated_at": now,
     })
     _invalidar_cache_estadisticas()
@@ -1760,10 +1961,15 @@ async def eliminar_requerimiento_avanzada(
     avanzada_ref = db.collection("avanzadas").document(client_id)
     avanzada_doc = avanzada_ref.get()
     if avanzada_doc.exists:
-        avanzada_data = avanzada_doc.to_dict() or {}
-        nuevo_conteo = max(0, avanzada_data.get("requerimientos_count", 1) - 1)
+        # Increment atómico (mismo motivo que en crear_requerimiento_avanzada):
+        # evita la carrera read-then-write al decrementar. Nota: esto quita
+        # el piso ``max(0, ...)`` que existía antes contra un conteo
+        # negativo -- se acepta el tradeoff porque es un guard puramente
+        # defensivo (no hay ningún camino conocido hoy en que el conteo
+        # pueda quedar negativo en operación normal) y Firestore no ofrece
+        # un increment-con-piso atómico.
         avanzada_ref.update({
-            "requerimientos_count": nuevo_conteo,
+            "requerimientos_count": firestore.Increment(-1),
             "updated_at": now_colombia().isoformat(),
         })
 
