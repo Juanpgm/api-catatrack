@@ -322,6 +322,7 @@ class GeoRequerimientoOut(BaseModel):
     origen: str
     sigla: str
     entidad: str
+    entidades: List[str] = []
     categoria: Optional[str] = None
     requerimiento: str
     ubicacion: str
@@ -953,6 +954,7 @@ def _calcular_geo() -> dict:
             "origen": origen,
             "sigla": _sigla_entidad(entidad),
             "entidad": entidad,
+            "entidades": data.get("entidades") or ([entidad] if entidad else []),
             "categoria": categoria,
             "requerimiento": data.get("requerimiento", ""),
             "ubicacion": data.get("ubicacion", ""),
