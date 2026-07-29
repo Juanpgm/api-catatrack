@@ -664,6 +664,7 @@ class EncuestaCreateIn(BaseModel):
 
 class RequerimientoJornadaIn(BaseModel):
     entidad: str = Field(..., min_length=1)
+    entidades: List[str] = Field(default_factory=list)
     categoria: Optional[str] = None
     categoria_personalizada: Optional[str] = None
     requerimiento: str = Field(..., min_length=1)
@@ -752,6 +753,7 @@ class RequerimientoJornadaOut(BaseModel):
     jornada_client_id: str
     req_index: int
     entidad: str
+    entidades: List[str] = Field(default_factory=list)
     categoria: Optional[str] = None
     categoria_personalizada: Optional[str] = None
     requerimiento: str
@@ -1509,12 +1511,14 @@ async def crear_requerimientos_jornada(
     creados: List[dict] = []
     for pos, req_in in enumerate(payload.requerimientos):
         idx = offset + pos
+        entidad = req_in.entidades[0] if req_in.entidades else req_in.entidad
         req_data = {
             "avanzada_client_id": None,
             "jornada_client_id": client_id,
             "origen": "jornada",
             "req_index": idx,
-            "entidad": req_in.entidad,
+            "entidad": entidad,
+            "entidades": req_in.entidades,
             "categoria": req_in.categoria,
             "categoria_personalizada": req_in.categoria_personalizada,
             "requerimiento": req_in.requerimiento,
@@ -1538,7 +1542,7 @@ async def crear_requerimientos_jornada(
 
         if req_in.categoria_personalizada and req_in.categoria_personalizada.strip():
             avanzadas_routes._upsert_categoria_personalizada(
-                entidad_sigla=avanzadas_routes._sigla_entidad(req_in.entidad),
+                entidad_sigla=avanzadas_routes._sigla_entidad(entidad),
                 categoria=req_in.categoria_personalizada.strip(),
                 fecha=jornada_data.get("fecha", ""),
             )

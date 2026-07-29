@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field, ValidationError
 from firebase_admin import firestore
 
 from app.auth_system.dependencies import get_current_user
+from app.classification.classifier import clasificar_centros_gestores
 from app.data.avanzadas_catalogos import (
     CATEGORIAS_DEFAULT,
     DEPENDENCIAS_DEFAULT,
@@ -84,6 +85,7 @@ class AsistenteIn(BaseModel):
 
 class RequerimientoAvanzadaIn(BaseModel):
     entidad: str = Field(..., min_length=1)
+    entidades: List[str] = Field(default_factory=list)
     categoria: Optional[str] = None
     categoria_personalizada: Optional[str] = None
     requerimiento: str = Field(..., min_length=1)
@@ -150,12 +152,19 @@ class RequerimientoAvanzadaPatchIn(BaseModel):
     no por este modelo.
     """
     entidad: Optional[str] = Field(None, min_length=1)
+    entidades: List[str] = Field(default_factory=list)
     categoria: Optional[str] = None
     categoria_personalizada: Optional[str] = None
     requerimiento: Optional[str] = Field(None, min_length=1)
     ubicacion: Optional[str] = Field(None, min_length=1)
     coordenadas: Optional[str] = None
     fotos_eliminar: Optional[List[str]] = None
+
+
+class ClasificarRequerimientoIn(BaseModel):
+    texto: str = Field(..., min_length=1)
+    tipo_requerimiento: Optional[str] = None
+    observaciones: Optional[str] = None
 
 
 # ==================== MODELOS DE SALIDA ====================
@@ -232,6 +241,14 @@ class CatalogosOut(BaseModel):
     equipo: List[str]
     dependencias: List[str]
     categorias: Dict[str, List[str]]
+
+
+class ClasificarRequerimientoOut(BaseModel):
+    organismos_sugeridos: List[str]
+    confianza: float
+    metodo: str
+    tipo_requerimiento: str
+    acciones_por_organismo: Dict[str, List[str]]
 
 
 class TotalesEstadisticasOut(BaseModel):
@@ -342,6 +359,31 @@ class GeoOut(BaseModel):
 def _sigla_entidad(entidad: str) -> str:
     """Extrae la sigla de una entidad en formato 'SIGLA - Nombre completo'."""
     return entidad.split(" - ", 1)[0].strip()
+
+
+# Mapeo de siglas devueltas por el clasificador (ver
+# app/classification/taxonomia.py -> RESPONSABLES_CONOCIDOS) que no
+# coinciden literalmente con la sigla usada en DEPENDENCIAS_DEFAULT.
+_NORMALIZACION_ORGANISMOS: Dict[str, str] = {
+    "SSJ": "Seguridad y Justicia - Secretaría de Seguridad y Justicia",
+    "Secretaría de Movilidad": "Movilidad - Secretaría de Movilidad",
+    "Policía": "Policía - Policía Metropolitana",
+    "CVC": "CVC - Corporación Autónoma Regional del Valle del Cauca",
+}
+
+
+def _normalizar_organismo(sigla: str) -> Optional[str]:
+    """Convierte una sigla del clasificador a su entrada completa de
+    ``DEPENDENCIAS_DEFAULT`` ("SIGLA - Nombre completo"). Devuelve
+    ``None`` si no hay forma de mapearla, para que el llamador la
+    descarte en vez de exponer una sigla suelta que el multi-select
+    del frontend no reconocería."""
+    if sigla in _NORMALIZACION_ORGANISMOS:
+        return _NORMALIZACION_ORGANISMOS[sigla]
+    for entrada in DEPENDENCIAS_DEFAULT:
+        if entrada.startswith(f"{sigla} - "):
+            return entrada
+    return None
 
 
 def _parsear_coordenadas(valor) -> Optional[tuple]:
@@ -1212,6 +1254,7 @@ async def crear_avanzada(
     # Armar los documentos de requerimientos (las fotos ya están subidas).
     requerimientos_out: List[RequerimientoAvanzadaOut] = []
     for idx, req_in in enumerate(payload.requerimientos):
+        entidad = req_in.entidades[0] if req_in.entidades else req_in.entidad
         req_data = {
             "avanzada_client_id": payload.client_id,
             # jornada_client_id / origen: Parte 2 del feature de Jornadas
@@ -1222,7 +1265,8 @@ async def crear_avanzada(
             "jornada_client_id": None,
             "origen": "avanzada",
             "req_index": idx,
-            "entidad": req_in.entidad,
+            "entidad": entidad,
+            "entidades": req_in.entidades,
             "categoria": req_in.categoria,
             "categoria_personalizada": req_in.categoria_personalizada,
             "requerimiento": req_in.requerimiento,
@@ -1251,7 +1295,7 @@ async def crear_avanzada(
 
         if req_in.categoria_personalizada and req_in.categoria_personalizada.strip():
             _upsert_categoria_personalizada(
-                entidad_sigla=_sigla_entidad(req_in.entidad),
+                entidad_sigla=_sigla_entidad(entidad),
                 categoria=req_in.categoria_personalizada.strip(),
                 fecha=payload.fecha,
             )
@@ -1687,6 +1731,44 @@ async def descargar_reporte_pdf_avanzada(
         raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
 
 
+# ==================== CLASIFICACIÓN AUTOMÁTICA ====================
+
+@router.post(
+    "/clasificar-requerimiento",
+    summary="🤖 POST | Clasificar Requerimiento (sugerir organismos)",
+    response_model=ClasificarRequerimientoOut,
+)
+async def clasificar_requerimiento_avanzada(
+    payload: ClasificarRequerimientoIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """Sugiere los organismos/entidades responsables de un requerimiento a
+    partir de su texto, delegando en el clasificador de centros gestores
+    (``app/classification/classifier.py``). Las siglas devueltas por el
+    clasificador se normalizan a entradas completas de
+    ``DEPENDENCIAS_DEFAULT`` ("SIGLA - Nombre completo"); las que no se
+    puedan mapear se descartan."""
+    resultado = clasificar_centros_gestores(
+        requerimiento=payload.texto,
+        tipo_requerimiento=payload.tipo_requerimiento,
+        observaciones=payload.observaciones,
+    )
+
+    organismos_sugeridos: List[str] = []
+    for sigla in resultado["centros_gestores"]:
+        organismo = _normalizar_organismo(sigla)
+        if organismo and organismo not in organismos_sugeridos:
+            organismos_sugeridos.append(organismo)
+
+    return ClasificarRequerimientoOut(
+        organismos_sugeridos=organismos_sugeridos,
+        confianza=resultado["confianza"],
+        metodo=resultado["metodo"],
+        tipo_requerimiento=resultado["tipo_requerimiento"],
+        acciones_por_organismo=resultado["acciones_por_organismo"],
+    )
+
+
 # ==================== SUB-RECURSO: REQUERIMIENTOS DE AVANZADA ====================
 
 @router.post(
@@ -1761,12 +1843,14 @@ async def crear_requerimiento_avanzada(
 
     avanzada_data = avanzada_doc.to_dict() or {}
     now = now_colombia().isoformat()
+    entidad = req_in.entidades[0] if req_in.entidades else req_in.entidad
     req_data = {
         "avanzada_client_id": client_id,
         "jornada_client_id": None,
         "origen": "avanzada",
         "req_index": req_index,
-        "entidad": req_in.entidad,
+        "entidad": entidad,
+        "entidades": req_in.entidades,
         "categoria": req_in.categoria,
         "categoria_personalizada": req_in.categoria_personalizada,
         "requerimiento": req_in.requerimiento,
@@ -1786,7 +1870,7 @@ async def crear_requerimiento_avanzada(
 
     if req_in.categoria_personalizada and req_in.categoria_personalizada.strip():
         _upsert_categoria_personalizada(
-            entidad_sigla=_sigla_entidad(req_in.entidad),
+            entidad_sigla=_sigla_entidad(entidad),
             categoria=req_in.categoria_personalizada.strip(),
             fecha=avanzada_data.get("fecha", ""),
         )
@@ -1864,6 +1948,8 @@ async def actualizar_requerimiento_avanzada(
         raise HTTPException(status_code=422, detail=e.errors())
 
     cambios = patch_in.model_dump(exclude_unset=True, exclude={"fotos_eliminar"})
+    if cambios.get("entidades"):
+        cambios["entidad"] = cambios["entidades"][0]
 
     fotos_urls = list(data_actual.get("fotos_urls", []))
     eliminadas = patch_in.fotos_eliminar or []
