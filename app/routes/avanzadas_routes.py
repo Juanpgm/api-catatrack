@@ -182,6 +182,7 @@ class RequerimientoAvanzadaOut(BaseModel):
     avanzada_client_id: str
     req_index: int
     entidad: str
+    entidades: List[str] = []
     categoria: Optional[str] = None
     categoria_personalizada: Optional[str] = None
     requerimiento: str
