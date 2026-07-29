@@ -457,6 +457,29 @@ def _siguiente_req_index(client_id: str) -> int:
     return (max(indices) + 1) if indices else 0
 
 
+def _construir_catalogo_dependencias() -> List[str]:
+    """Combina las dependencias/organismos por defecto con las
+    personalizadas registradas en campo (mismo patrón que
+    ``_construir_catalogo_categorias``, pero la lista es plana en vez de
+    por-entidad)."""
+    dependencias = list(DEPENDENCIAS_DEFAULT)
+    existentes_lower = {d.strip().lower() for d in dependencias}
+
+    try:
+        docs = db.collection("dependencias_personalizadas").stream()
+    except Exception:
+        docs = []
+
+    for doc in docs:
+        nombre = ((doc.to_dict() or {}).get("nombre") or "").strip()
+        if not nombre or nombre.lower() in existentes_lower:
+            continue
+        dependencias.append(nombre)
+        existentes_lower.add(nombre.lower())
+
+    return dependencias
+
+
 def _construir_catalogo_categorias() -> Dict[str, List[str]]:
     """Combina las categorías por defecto con las personalizadas de Firestore.
 
@@ -497,10 +520,17 @@ class _CatalogosCacheEntry:
     expires_at: float
 
 
+@dataclass
+class _DependenciasCacheEntry:
+    value: List[str]
+    expires_at: float
+
+
 # Cache module-level, sin dependencias externas. Una simple asignación de
 # variable global es atómica en CPython, así que alcanza para el caso
 # concurrente sin necesidad de locks.
 _catalogos_cache: Optional[_CatalogosCacheEntry] = None
+_dependencias_cache: Optional[_DependenciasCacheEntry] = None
 
 
 def _obtener_catalogo_categorias_cacheado() -> Dict[str, List[str]]:
@@ -522,9 +552,27 @@ def _obtener_catalogo_categorias_cacheado() -> Dict[str, List[str]]:
     return value
 
 
+def _obtener_catalogo_dependencias_cacheado() -> List[str]:
+    """Como ``_obtener_catalogo_categorias_cacheado`` pero para la lista
+    plana de dependencias/organismos (defaults + personalizadas)."""
+    global _dependencias_cache
+
+    entry = _dependencias_cache
+    now = time.monotonic()
+    if entry is not None and entry.expires_at > now:
+        return entry.value
+
+    value = _construir_catalogo_dependencias()
+    _dependencias_cache = _DependenciasCacheEntry(
+        value=value, expires_at=now + _AVANZADAS_CATALOGOS_TTL_SECONDS
+    )
+    return value
+
+
 def _invalidar_cache_catalogos() -> None:
-    global _catalogos_cache
+    global _catalogos_cache, _dependencias_cache
     _catalogos_cache = None
+    _dependencias_cache = None
 
 
 def _mes_valido(fecha) -> Optional[str]:
@@ -1007,6 +1055,27 @@ def _upsert_categoria_personalizada(entidad_sigla: str, categoria: str, fecha: s
     _invalidar_cache_catalogos()
 
 
+def _upsert_dependencias_personalizadas(entidades: List[str], fecha: str) -> None:
+    """Registra como dependencia personalizada cada entidad de ``entidades``
+    que todavía no exista en el catálogo (default + ya personalizadas),
+    comparando sin distinguir mayúsculas. Se llama con la lista completa de
+    organismos elegidos en un requerimiento (creación o edición)."""
+    catalogo_actual = {d.strip().lower() for d in _obtener_catalogo_dependencias_cacheado()}
+    agrego_alguna = False
+    for nombre in entidades:
+        nombre = (nombre or "").strip()
+        if not nombre or nombre.lower() in catalogo_actual:
+            continue
+        db.collection("dependencias_personalizadas").document().set({
+            "nombre": nombre,
+            "fecha": fecha,
+        })
+        catalogo_actual.add(nombre.lower())
+        agrego_alguna = True
+    if agrego_alguna:
+        _invalidar_cache_catalogos()
+
+
 def _parse_json_payload(datos: str, modelo):
     """Parsea el campo multipart ``datos`` (JSON) contra el modelo Pydantic
     indicado. Común a los tres endpoints que reciben ``datos`` como string
@@ -1131,7 +1200,7 @@ async def get_catalogos(current_user: dict = Depends(get_current_user)):
         return CatalogosOut(
             estrategias=ESTRATEGIAS_DEFAULT,
             equipo=EQUIPO_DEFAULT,
-            dependencias=DEPENDENCIAS_DEFAULT,
+            dependencias=_obtener_catalogo_dependencias_cacheado(),
             categorias=_obtener_catalogo_categorias_cacheado(),
         )
     except Exception as e:
@@ -1300,6 +1369,8 @@ async def crear_avanzada(
                 categoria=req_in.categoria_personalizada.strip(),
                 fecha=payload.fecha,
             )
+        if req_in.entidades:
+            _upsert_dependencias_personalizadas(req_in.entidades, payload.fecha)
 
     avanzada_data = {
         "client_id": payload.client_id,
@@ -1875,6 +1946,8 @@ async def crear_requerimiento_avanzada(
             categoria=req_in.categoria_personalizada.strip(),
             fecha=avanzada_data.get("fecha", ""),
         )
+    if req_in.entidades:
+        _upsert_dependencias_personalizadas(req_in.entidades, avanzada_data.get("fecha", ""))
 
     # Increment atómico de Firestore en vez de leer-y-sumar sobre
     # 'avanzada_data' (fetcheado al inicio de la request): dos requests
@@ -1951,6 +2024,7 @@ async def actualizar_requerimiento_avanzada(
     cambios = patch_in.model_dump(exclude_unset=True, exclude={"fotos_eliminar"})
     if cambios.get("entidades"):
         cambios["entidad"] = cambios["entidades"][0]
+        _upsert_dependencias_personalizadas(cambios["entidades"], data_actual.get("fecha", ""))
 
     fotos_urls = list(data_actual.get("fotos_urls", []))
     eliminadas = patch_in.fotos_eliminar or []

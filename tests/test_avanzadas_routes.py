@@ -39,8 +39,10 @@ def _reset_catalogos_cache():
     calculado con el ``fake_db`` de un test se filtraría al siguiente.
     """
     avanzadas_routes._catalogos_cache = None
+    avanzadas_routes._dependencias_cache = None
     yield
     avanzadas_routes._catalogos_cache = None
+    avanzadas_routes._dependencias_cache = None
 
 
 @pytest.fixture()
@@ -416,6 +418,48 @@ def test_crear_avanzada_no_duplica_categoria_personalizada_existente(client, fak
     _post_avanzada(client, datos)
 
     personalizadas = [d.to_dict() for d in fake_db.collection("categorias_personalizadas").stream()]
+    assert len(personalizadas) == 1
+
+
+def test_crear_avanzada_upsert_dependencia_personalizada(client, fake_db):
+    datos = _valid_datos(client_id="cid-org")
+    datos["requerimientos"][0]["entidades"] = ["Organismo Nuevo Inventado"]
+
+    response = _post_avanzada(client, datos)
+    assert response.status_code == 201
+
+    personalizadas = [d.to_dict() for d in fake_db.collection("dependencias_personalizadas").stream()]
+    assert len(personalizadas) == 1
+    assert personalizadas[0]["nombre"] == "Organismo Nuevo Inventado"
+
+    body = client.get("/avanzadas/catalogos").json()
+    assert "Organismo Nuevo Inventado" in body["dependencias"]
+
+
+def test_crear_avanzada_no_duplica_dependencia_ya_en_defaults(client, fake_db):
+    datos = _valid_datos(client_id="cid-org-2")
+    datos["requerimientos"][0]["entidades"] = [
+        "DAGMA - Departamento Administrativo de Gestión del Medio Ambiente"
+    ]
+
+    _post_avanzada(client, datos)
+
+    personalizadas = [d.to_dict() for d in fake_db.collection("dependencias_personalizadas").stream()]
+    assert len(personalizadas) == 0
+
+
+def test_crear_avanzada_no_duplica_dependencia_personalizada_existente(client, fake_db):
+    fake_db.collection("dependencias_personalizadas").document().set({
+        "nombre": "Organismo Repetido",
+        "fecha": "2026-07-01",
+    })
+
+    datos = _valid_datos(client_id="cid-org-3")
+    datos["requerimientos"][0]["entidades"] = ["Organismo Repetido"]
+
+    _post_avanzada(client, datos)
+
+    personalizadas = [d.to_dict() for d in fake_db.collection("dependencias_personalizadas").stream()]
     assert len(personalizadas) == 1
 
 
