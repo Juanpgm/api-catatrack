@@ -1007,6 +1007,38 @@ def test_patch_requerimiento_actualiza_parcial(client, fake_db):
     assert body["requerimiento"] == "Árbol caído bloquea la vía"
 
 
+def test_crear_y_editar_requerimiento_multiorganismo_persiste_lista_completa(client, fake_db):
+    """Round-trip completo: crear con varios organismos, editar agregando/
+    cambiando la lista, y releer con un GET fresco (no la misma respuesta del
+    PATCH) -- para confirmar que 'entidades' sobrevive tal cual en Firestore,
+    no solo en el eco de la request que la escribió."""
+    dagma = "DAGMA - Departamento Administrativo de Gestión del Medio Ambiente"
+    uaesp = "UAESP - Unidad Administrativa Especial de Servicios Públicos Municipales"
+    emcali = "EMCALI - Empresas Municipales de Cali"
+
+    datos = _valid_datos(client_id="cid-multiorg")
+    datos["requerimientos"][0]["entidades"] = [dagma, uaesp]
+    created = _post_avanzada(client, datos).json()
+    req_id = created["requerimientos"][0]["id"]
+
+    assert created["requerimientos"][0]["entidades"] == [dagma, uaesp]
+    assert created["requerimientos"][0]["entidad"] == dagma
+
+    response = _patch_requerimiento(client, "cid-multiorg", req_id, {"entidades": [uaesp, emcali]})
+    assert response.status_code == 200
+    assert response.json()["entidades"] == [uaesp, emcali]
+    assert response.json()["entidad"] == uaesp
+
+    # GET fresco: no reutiliza la respuesta del PATCH, vuelve a leer Firestore.
+    detalle = client.get("/avanzadas/cid-multiorg").json()
+    req_leido = next(r for r in detalle["requerimientos"] if r["id"] == req_id)
+    assert req_leido["entidades"] == [uaesp, emcali]
+    assert req_leido["entidad"] == uaesp
+
+    solo = client.get(f"/avanzadas/cid-multiorg/requerimientos/{req_id}").json()
+    assert solo["entidades"] == [uaesp, emcali]
+
+
 def test_patch_requerimiento_no_encontrado(client, fake_db):
     _post_avanzada(client, _valid_datos(client_id="cid-patchreq2"))
 
