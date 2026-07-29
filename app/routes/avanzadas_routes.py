@@ -426,21 +426,49 @@ def _parsear_coordenadas(valor) -> Optional[tuple]:
 def _requerimiento_doc_to_out(doc) -> dict:
     data = doc.to_dict() or {}
     data["id"] = doc.id
+    data["fotos_urls"] = _presignar_fotos_urls(data.get("fotos_urls") or [])
     return data
 
 
 def _s3_key_from_url(url: str) -> Optional[str]:
     """Extrae la ``s3_key`` de una ``s3_url`` con el formato que arma
-    ``s3_storage.upload_file`` (``https://{bucket}.s3.amazonaws.com/{key}``).
+    ``s3_storage.upload_file`` (``https://{bucket}.s3.amazonaws.com/{key}``),
+    o de la URL presignada equivalente que arma ``_presignar_fotos_urls``
+    (misma key + querystring de firma ``?X-Amz-...``).
 
-    Retorna ``None`` si ``url`` no tiene ese formato (p. ej. ya es una URL
-    presignada u otro esquema) -- en vez de adivinar, se prefiere no borrar
-    nada en S3 antes que borrar la key equivocada.
+    Retorna ``None`` si ``url`` no tiene ese formato (p. ej. un link de
+    Drive migrado u otro esquema) -- en vez de adivinar, se prefiere no
+    borrar nada en S3 antes que borrar la key equivocada.
     """
     marcador = ".amazonaws.com/"
     if marcador not in url:
         return None
-    return url.split(marcador, 1)[1]
+    return url.split(marcador, 1)[1].split("?", 1)[0]
+
+
+def _presignar_fotos_urls(urls: List[str]) -> List[str]:
+    """Convierte las ``s3_url`` planas (sin firma) que arma
+    ``s3_storage.upload_file`` en URLs presignadas visualizables --el mismo
+    patrón que ya usaba el legacy ``_listar_documentos_s3`` de
+    ``artefacto_360_routes`` para que ``<img>`` pueda renderizarlas sin que
+    el bucket sea público. URLs que no matchean ese formato (ya presignadas,
+    links de Drive migrados, etc.) se devuelven sin tocar.
+    """
+    if not urls:
+        return urls
+    try:
+        s3_client = get_s3_client()
+    except Exception:
+        return urls
+    bucket = s3_storage.bucket_name()
+    resultado = []
+    for url in urls:
+        key = _s3_key_from_url(url)
+        if not key:
+            resultado.append(url)
+            continue
+        resultado.append(s3_storage.presign_url(key, s3_client=s3_client, bucket=bucket))
+    return resultado
 
 
 def _siguiente_req_index(client_id: str) -> int:
@@ -1963,6 +1991,7 @@ async def crear_requerimiento_avanzada(
     _invalidar_cache_estadisticas()
     _invalidar_cache_geo()
 
+    req_data["fotos_urls"] = _presignar_fotos_urls(req_data["fotos_urls"])
     return RequerimientoAvanzadaOut(**req_data)
 
 
@@ -2032,16 +2061,25 @@ async def actualizar_requerimiento_avanzada(
     eliminadas = patch_in.fotos_eliminar or []
     fotos_tocadas = False
     if eliminadas:
-        keys_a_borrar = [k for k in (_s3_key_from_url(u) for u in eliminadas) if k]
-        if keys_a_borrar:
+        # `eliminadas` trae las URLs tal como el frontend las mostró, que
+        # pueden ser presignadas (ver `_presignar_fotos_urls`) y por lo
+        # tanto distintas string-a-string de la `s3_url` plana persistida
+        # en `fotos_urls`. Comparar por `s3_key` (estable en ambos formatos)
+        # en vez de igualdad de string evita que la foto "sobreviva" el
+        # filtro solo porque su URL mostrada llevaba querystring de firma.
+        keys_a_borrar_set = {k for k in (_s3_key_from_url(u) for u in eliminadas) if k}
+        if keys_a_borrar_set:
             try:
                 s3_client = get_s3_client()
                 s3_storage.delete_keys(
-                    keys_a_borrar, s3_client=s3_client, bucket=s3_storage.bucket_name()
+                    list(keys_a_borrar_set), s3_client=s3_client, bucket=s3_storage.bucket_name()
                 )
             except Exception:
                 pass
-        fotos_urls = [u for u in fotos_urls if u not in eliminadas]
+        fotos_urls = [
+            u for u in fotos_urls
+            if u not in eliminadas and _s3_key_from_url(u) not in keys_a_borrar_set
+        ]
         fotos_tocadas = True
 
     form = await request.form()
