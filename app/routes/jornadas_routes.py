@@ -821,6 +821,8 @@ def _jornada_doc_a_dict(doc) -> dict:
     data["client_id"] = doc.id
     data["creado"] = _fecha_a_str(data.get("creado"))
     data["actualizado"] = _fecha_a_str(data.get("actualizado"))
+    if data.get("url_croquis"):
+        data["url_croquis"] = avanzadas_routes._presignar_fotos_urls([data["url_croquis"]])[0]
     return data
 
 
@@ -848,6 +850,7 @@ def _compromiso_doc_a_dict(doc) -> dict:
     data["creado"] = _fecha_a_str(data.get("creado"))
     data["actualizado"] = _fecha_a_str(data.get("actualizado")) if data.get("actualizado") else None
     data["seguimientos"] = _listar_seguimientos_de_compromiso(doc.id)
+    data["fotos_verificacion"] = avanzadas_routes._presignar_fotos_urls(data.get("fotos_verificacion") or [])
     return data
 
 
@@ -861,6 +864,7 @@ def _encuesta_doc_a_dict(doc) -> dict:
 def _requerimiento_jornada_doc_a_dict(doc) -> dict:
     data = doc.to_dict() or {}
     data["id"] = doc.id
+    data["fotos_urls"] = avanzadas_routes._presignar_fotos_urls(data.get("fotos_urls") or [])
     return data
 
 
@@ -1538,6 +1542,7 @@ async def crear_requerimientos_jornada(
         req_doc_id = f"{client_id}_{idx}"
         db.collection("avanzadas_requerimientos").document(req_doc_id).set(req_data)
         req_data["id"] = req_doc_id
+        req_data["fotos_urls"] = avanzadas_routes._presignar_fotos_urls(req_data["fotos_urls"])
         creados.append(req_data)
 
         if req_in.categoria_personalizada and req_in.categoria_personalizada.strip():
