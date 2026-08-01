@@ -14,6 +14,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from firebase_admin import auth as firebase_auth
+
+from app.auth_system import dependencies
 from app.auth_system.dependencies import get_current_user
 from app.routes import avanzadas_routes
 from tests.fakes_firestore import FakeFirestore, FakeS3Client
@@ -62,6 +65,25 @@ def client(fake_db, fake_s3):
 
 @pytest.fixture()
 def unauthenticated_client(fake_db, fake_s3):
+    app = FastAPI()
+    app.include_router(avanzadas_routes.router)
+    return TestClient(app)
+
+
+@pytest.fixture()
+def real_auth_client(fake_db, fake_s3, monkeypatch):
+    """Como `client`, pero SIN el `dependency_overrides` de `get_current_user`:
+    ejercita la ruta real `GET /avanzadas` -> `get_current_user` ->
+    `auth_client.verify_id_token`, para probar la clasificación 401 real de
+    principio a fin (Req. Backend Token Verification Correctness).
+
+    `get_current_user` (app/auth_system/dependencies.py) importa su propio
+    binding de `db` (`from app.firebase_config import ... db`), separado del
+    `avanzadas_routes.db` que ya parchea el fixture `fake_db` — hay que
+    parchear también `dependencies.db` para que el lookup de usuario use el
+    mismo Firestore fake en vez de pegarle a la red real.
+    """
+    monkeypatch.setattr(dependencies, "db", fake_db)
     app = FastAPI()
     app.include_router(avanzadas_routes.router)
     return TestClient(app)
@@ -130,6 +152,37 @@ def test_listar_requiere_autenticacion(unauthenticated_client):
 
 def test_detalle_requiere_autenticacion(unauthenticated_client):
     assert unauthenticated_client.get("/avanzadas/cualquier-id").status_code == 403
+
+
+def test_listar_avanzadas_bearer_expirado_o_invalido_da_401(monkeypatch, real_auth_client):
+    """Integración de extremo a extremo (sin dependency_override): un Bearer
+    genuinamente expirado/inválido contra la ruta real GET /avanzadas debe
+    devolver 401 con el detalle esperado, vía la clasificación real de
+    `get_current_user` (Req. Backend Token Verification Correctness)."""
+
+    def _raise(*args, **kwargs):
+        raise firebase_auth.InvalidIdTokenError("token expirado")
+
+    monkeypatch.setattr(dependencies.auth_client, "verify_id_token", _raise)
+
+    response = real_auth_client.get("/avanzadas", headers={"Authorization": "Bearer token-expirado"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Token inválido o expirado"
+
+
+def test_listar_avanzadas_bearer_valido_da_200(monkeypatch, real_auth_client, fake_db):
+    """Contraparte en verde del test anterior: un Bearer válido contra la
+    ruta real GET /avanzadas debe pasar la autenticación y responder 200."""
+    fake_db.collection("users").document("user-real").set({"email": "real@b.com", "is_active": True})
+    monkeypatch.setattr(
+        dependencies.auth_client, "verify_id_token", lambda *a, **k: {"uid": "user-real"}
+    )
+
+    response = real_auth_client.get("/avanzadas", headers={"Authorization": "Bearer token-valido"})
+
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -24,7 +24,12 @@ async def get_current_user(
 ) -> dict:
     token = credentials.credentials
     try:
-        decoded_token = auth_client.verify_id_token(token)
+        # clock_skew_seconds=30 absorbe un desfase de reloj cliente/servidor
+        # razonable sin abrir una ventana de aceptación insegura (SDK admite
+        # 0-60s): sin esto, un dispositivo de campo con el reloj unos
+        # segundos desincronizado podía recibir un 401 espurio en un token
+        # técnicamente válido.
+        decoded_token = auth_client.verify_id_token(token, clock_skew_seconds=30)
     except auth_client.CertificateFetchError as exc:
         # Fallo de red al buscar las claves públicas de Google: no dice nada
         # sobre la validez del token del usuario. Tratarlo como 401 dispara

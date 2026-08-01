@@ -111,3 +111,44 @@ def test_usuario_no_encontrado_sigue_dando_404(monkeypatch, client, fake_db):
     response = client.get("/protegido", headers=AUTH_HEADERS)
 
     assert response.status_code == 404
+
+
+def test_verify_id_token_se_llama_con_clock_skew_seconds_30(monkeypatch, client, fake_db):
+    """`clock_skew_seconds=30` absorbe desfase de reloj cliente/servidor sin
+    abrir una ventana de aceptación insegura (design.md, Decisión: Backend
+    clock_skew_seconds acotado)."""
+    fake_db.collection("users").document("user-1").set({"email": "a@b.com", "is_active": True})
+    calls = []
+
+    def _verify(token, *args, **kwargs):
+        calls.append((args, kwargs))
+        return {"uid": "user-1"}
+
+    monkeypatch.setattr(dependencies.auth_client, "verify_id_token", _verify)
+
+    response = client.get("/protegido", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert kwargs.get("clock_skew_seconds") == 30
+
+
+def test_token_dentro_de_tolerancia_de_skew_no_da_401(monkeypatch, client, fake_db):
+    """Un token cuyos timestamps están dentro de la tolerancia de clock skew
+    NO debe producir 401 — simulado dejando que verify_id_token acepte el
+    token (comportamiento real del SDK cuando clock_skew_seconds cubre el
+    desfase) en vez de lanzar InvalidIdTokenError."""
+    fake_db.collection("users").document("user-skew").set({"email": "skew@b.com", "is_active": True})
+    monkeypatch.setattr(
+        dependencies.auth_client,
+        "verify_id_token",
+        lambda token, **kwargs: {"uid": "user-skew"} if kwargs.get("clock_skew_seconds") == 30 else (_ for _ in ()).throw(
+            firebase_auth.InvalidIdTokenError("desfase de reloj fuera de tolerancia")
+        ),
+    )
+
+    response = client.get("/protegido", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["uid"] == "user-skew"
