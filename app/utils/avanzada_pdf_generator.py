@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
+from xml.sax.saxutils import escape as _xml_escape
 
 import httpx
 import reportlab
@@ -167,10 +168,22 @@ def _formatear_fecha_larga(fecha_iso: Optional[str]) -> str:
     return f"{nombre_dia}, {d.day} de {nombre_mes} de {d.year}"
 
 
+def _esc(valor: Any) -> str:
+    """Escapa texto de usuario antes de insertarlo en el mark-up de reportlab.
+
+    reportlab interpreta el contenido de Paragraph como mini-XML. Sin escapar,
+    un tag reconocido desbalanceado en un campo de usuario (un '</b>' pegado
+    desde Word, un '<b'/'<br' sin cerrar) o un '&' revienta doc.build() y el
+    informe entero falla ('No se pudo generar el PDF'). Escapa & < > dejando
+    intactos los tags que pone el propio generador (esos son literales).
+    """
+    return _xml_escape(str(valor))
+
+
 def _fila_dato(label: str, valor: Any, estilos: Dict) -> List:
     return [
         Paragraph(label, estilos["label"]),
-        Paragraph(str(valor) if valor not in (None, "") else "—", estilos["valor"]),
+        Paragraph(_esc(valor) if valor not in (None, "") else "—", estilos["valor"]),
     ]
 
 
@@ -522,7 +535,7 @@ def generar_reporte_avanzada(
 
     # ── Encabezado ───────────────────────────────────────────────────────────
     story.append(Paragraph("INFORME DE AVANZADA", estilos["titulo"]))
-    story.append(Paragraph(avanzada.get("nombre_avanzada") or "—", estilos["subtitulo"]))
+    story.append(Paragraph(_esc(avanzada.get("nombre_avanzada")) if avanzada.get("nombre_avanzada") else "—", estilos["subtitulo"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=_VERDE_CALI, spaceAfter=8))
 
     filas_info = [
@@ -540,7 +553,7 @@ def generar_reporte_avanzada(
 
     # ── Foto de equipo + encargados ───────────────────────────────────────────
     encargados = avanzada.get("encargados") or []
-    encargados_html = "<br/>".join(f"•&nbsp;&nbsp;{e}" for e in encargados) or "—"
+    encargados_html = "<br/>".join(f"•&nbsp;&nbsp;{_esc(e)}" for e in encargados) or "—"
     bloque_encargados = [
         Paragraph("Encargados de la visita:", estilos["label"]),
         Spacer(1, 3),
@@ -581,10 +594,10 @@ def generar_reporte_avanzada(
         for i, a in enumerate(asistentes, start=1):
             filas.append([
                 Paragraph(str(i), estilos["valor"]),
-                Paragraph(a.get("nombre") or "—", estilos["valor"]),
-                Paragraph(a.get("organismo") or "—", estilos["valor"]),
-                Paragraph(a.get("celular") or "—", estilos["valor"]),
-                Paragraph(a.get("correo") or "—", estilos["valor"]),
+                Paragraph(_esc(a.get("nombre")) if a.get("nombre") else "—", estilos["valor"]),
+                Paragraph(_esc(a.get("organismo")) if a.get("organismo") else "—", estilos["valor"]),
+                Paragraph(_esc(a.get("celular")) if a.get("celular") else "—", estilos["valor"]),
+                Paragraph(_esc(a.get("correo")) if a.get("correo") else "—", estilos["valor"]),
             ])
         t = Table(filas, colWidths=[0.8 * cm, 3.2 * cm, 5.6 * cm, 2.6 * cm, 5.2 * cm], hAlign="LEFT")
         t.setStyle(TableStyle([
@@ -625,7 +638,7 @@ def generar_reporte_avanzada(
     for entidad, reqs in grupos.items():
         color_entidad = entidad_color[entidad]
         cabecera_entidad = Table(
-            [[Paragraph(entidad, estilos["entidad_titulo"]), Paragraph(f"{len(reqs)} req.", estilos["valor"])]],
+            [[Paragraph(_esc(entidad), estilos["entidad_titulo"]), Paragraph(f"{len(reqs)} req.", estilos["valor"])]],
             colWidths=[13 * cm, 3.4 * cm],
         )
         cabecera_entidad.setStyle(TableStyle([
@@ -651,10 +664,10 @@ def generar_reporte_avanzada(
 
             texto_req = [
                 Paragraph(f"Requerimiento {numero}", estilos["req_titulo"]),
-                Paragraph(f"<b>Categoría:</b> {categoria}", estilos["campo"]),
-                Paragraph(f"<b>Descripción:</b> {descripcion}", estilos["campo"]),
-                Paragraph(f"<b>Ubicación:</b> {ubicacion}", estilos["campo"]),
-                Paragraph(f"<b>Coordenadas:</b> {coordenadas or '—'}", estilos["campo"]),
+                Paragraph(f"<b>Categoría:</b> {_esc(categoria)}", estilos["campo"]),
+                Paragraph(f"<b>Descripción:</b> {_esc(descripcion)}", estilos["campo"]),
+                Paragraph(f"<b>Ubicación:</b> {_esc(ubicacion)}", estilos["campo"]),
+                Paragraph(f"<b>Coordenadas:</b> {_esc(coordenadas) if coordenadas else '—'}", estilos["campo"]),
             ]
 
             if grid_fotos:
@@ -693,7 +706,7 @@ def generar_reporte_avanzada(
     story.append(Paragraph("RESUMEN", estilos["seccion"]))
     filas_resumen = [[Paragraph("Entidad", estilos["label"]), Paragraph("Cantidad", estilos["label"])]]
     for entidad, reqs in grupos.items():
-        filas_resumen.append([Paragraph(entidad, estilos["valor"]), Paragraph(str(len(reqs)), estilos["valor"])])
+        filas_resumen.append([Paragraph(_esc(entidad), estilos["valor"]), Paragraph(str(len(reqs)), estilos["valor"])])
     filas_resumen.append([
         Paragraph("Total", estilos["req_titulo"]),
         Paragraph(str(len(requerimientos)), estilos["req_titulo"]),
@@ -729,7 +742,7 @@ def generar_reporte_avanzada(
                 swatch = Table([[""]], colWidths=[0.35 * cm], rowHeights=[0.35 * cm])
                 swatch.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(color_hex))]))
                 fila.append(swatch)
-                fila.append(Paragraph(entidad, estilos["leyenda"]))
+                fila.append(Paragraph(_esc(entidad), estilos["leyenda"]))
             if len(par) == 1:
                 fila.extend(["", ""])
             filas_leyenda.append(fila)
@@ -752,8 +765,8 @@ def generar_reporte_avanzada(
         for numero, entidad, descripcion in equivalencia_filas:
             filas_equiv.append([
                 Paragraph(str(numero), estilos["valor"]),
-                Paragraph(entidad, estilos["valor"]),
-                Paragraph(descripcion, estilos["valor"]),
+                Paragraph(_esc(entidad), estilos["valor"]),
+                Paragraph(_esc(descripcion), estilos["valor"]),
             ])
         t_equiv = Table(filas_equiv, colWidths=[2 * cm, 6.5 * cm, 8.1 * cm], hAlign="LEFT")
         t_equiv.setStyle(TableStyle([

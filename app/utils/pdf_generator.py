@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
+from xml.sax.saxutils import escape as _xml_escape
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -121,11 +122,22 @@ def _estilos() -> Dict[str, ParagraphStyle]:
     return estilos
 
 
+def _esc(valor: Any) -> str:
+    """Escapa texto de usuario antes de insertarlo en el mark-up de reportlab.
+
+    reportlab interpreta el contenido de Paragraph como mini-XML; un tag
+    reconocido desbalanceado ('</b>' pegado desde Word, '<b'/'<br' sin cerrar)
+    o un '&' en un campo de usuario revienta doc.build() y el informe entero
+    falla. Escapa & < > (los tags que pone el propio generador son literales).
+    """
+    return _xml_escape(str(valor))
+
+
 def _fila_dato(label: str, valor: str, estilos: Dict) -> List:
     """Fila de dos celdas: etiqueta a la izquierda, valor a la derecha."""
     return [
         Paragraph(label, estilos["label"]),
-        Paragraph(str(valor) if valor is not None else "—", estilos["valor"]),
+        Paragraph(_esc(valor) if valor is not None else "—", estilos["valor"]),
     ]
 
 
@@ -161,7 +173,7 @@ def _badge(texto: str, bg_color: Any, estilos: Dict) -> Paragraph:
         fontSize=8,
         textColor=_GRIS_TEXTO,
     )
-    return Paragraph(texto.upper(), style)
+    return Paragraph(_esc(texto.upper()), style)
 
 
 def _estado_badge(estado: str, estilos: Dict) -> Paragraph:
@@ -280,7 +292,7 @@ def generar_reporte_visita(
 
             encabezado_req = [
                 [
-                    Paragraph(f"Requerimiento #{idx} — ID: {req.get('id', '—')}", estilos["req_titulo"]),
+                    Paragraph(f"Requerimiento #{idx} — ID: {_esc(req.get('id', '—'))}", estilos["req_titulo"]),
                     _estado_badge(estado, estilos),
                     _prioridad_badge(prioridad, estilos),
                 ]

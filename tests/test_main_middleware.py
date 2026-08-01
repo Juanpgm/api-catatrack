@@ -88,3 +88,27 @@ def test_catalogos_sin_accept_encoding_gzip_devuelve_utf8_sin_comprimir(client, 
 
     body = response.json()
     assert "Categoría de Migración registrada en campo" in body["categorias"]["DAGMA"]
+
+
+def test_error_no_controlado_500_conserva_cabeceras_cors(fake_db):
+    """Un error no-HTTP (p. ej. Firestore) debe dar 500 CON Access-Control-
+    Allow-Origin. Sin esa cabecera el navegador bloquea la respuesta y el
+    frontend ve "Failed to fetch" en vez del 500 real. El handler global de
+    Exception corre en el ServerErrorMiddleware (por fuera de CORS), así que
+    UnhandledErrorCORSMiddleware atrapa el error por dentro de la capa CORS.
+    """
+    def _boom():
+        raise RuntimeError("Firestore timeout simulado")
+
+    app.dependency_overrides[get_current_user] = _boom
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get(
+            "/avanzadas/catalogos",
+            headers={"Origin": "http://localhost:5173"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code == 500
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"

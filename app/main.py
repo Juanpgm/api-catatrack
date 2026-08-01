@@ -139,6 +139,55 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 # Agregar middleware de rate limiting
 app.add_middleware(SlowAPIMiddleware)
 
+# Captura de excepciones no controladas DENTRO de la capa CORS.
+#
+# El handler @app.exception_handler(Exception) de más abajo corre en el
+# ServerErrorMiddleware de Starlette, que es la capa MÁS externa de todas
+# (por fuera de CORSMiddleware). Por eso sus respuestas 500 salen sin la
+# cabecera Access-Control-Allow-Origin y el navegador las bloquea con
+# "Failed to fetch" en vez de mostrar el error. Este middleware atrapa la
+# excepción por DENTRO de CORS: la respuesta 500 vuelve a atravesar
+# CORSMiddleware y sí lleva las cabeceras, así el frontend puede leer el
+# error real. Se agrega ANTES que CORSMiddleware para que este último quede
+# por fuera y lo envuelva (último add_middleware = capa más externa).
+class UnhandledErrorCORSMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def send_wrapper(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception as exc:
+            logger.exception("Error no controlado procesando la petición")
+            if response_started:
+                # La respuesta ya empezó a enviarse (p. ej. streaming): no se
+                # puede reemplazar. Propagar al ServerErrorMiddleware.
+                raise
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": str(exc),
+                    "type": type(exc).__name__,
+                },
+                media_type="application/json; charset=utf-8",
+            )
+            await response(scope, receive, send)
+
+app.add_middleware(UnhandledErrorCORSMiddleware)
+
 # Configurar CORS
 app.add_middleware(
     CORSMiddleware,

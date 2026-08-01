@@ -93,6 +93,40 @@ def test_pdf_sin_asistentes_ni_encargados():
     assert pdf[:4] == b"%PDF"
 
 
+def test_pdf_markup_de_usuario_no_rompe_generacion():
+    """Texto de usuario que contiene mark-up de reportlab no debe reventar.
+
+    reportlab interpreta el contenido de Paragraph como mini-XML. Un tag
+    reconocido desbalanceado en CUALQUIER campo de usuario (un '</b>' suelto
+    pegado desde Word, un '<b' o '<br' sin cerrar) hacía fallar doc.build()
+    con 'unclosed tags' / parse error → HTTP 500 → 'No se pudo generar el
+    PDF'. Los campos de usuario deben escaparse antes de entrar al mark-up;
+    los tags '<b>...</b>' que pone el propio generador deben seguir en negrita.
+    """
+    avanzada = dict(
+        _AVANZADA_COMPLETA,
+        nombre_avanzada="Comuna <b importante",           # tag <b> sin cerrar
+        direccion="Cl. 47 #4-85 </b> anexo & lote <br>",   # cierre suelto + entidad + <br>
+        encargados=["Toledo </b> & equipo"],
+        asistentes=[{
+            "nombre": "Anderson <b Cía",
+            "organismo": "DAGMA & área </i>",
+            "celular": "3103533518",
+            "correo": "a&b@example.com",
+        }],
+    )
+    requerimientos = [dict(
+        _REQUERIMIENTOS[0],
+        entidad="Bienestar <br malformado",
+        categoria="Avance </b> crítico",
+        requerimiento="Poste caído </b> & daño <b estructural",
+        ubicacion="Cra. 5 </i> & andén",
+    )]
+    pdf = generar_reporte_avanzada(avanzada, requerimientos)
+    assert pdf[:4] == b"%PDF"
+    assert len(pdf) > 500
+
+
 def test_pdf_campos_ausentes():
     """El generador debe tolerar una avanzada mínima (sin sector, sin fotos)."""
     avanzada_minima = {

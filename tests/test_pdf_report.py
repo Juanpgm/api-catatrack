@@ -73,6 +73,40 @@ def test_genera_bytes_de_pdf():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Test — Mark-up de usuario no rompe la generación
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_pdf_markup_de_usuario_no_rompe_generacion():
+    """Texto de usuario con mark-up de reportlab no debe reventar el informe.
+
+    Un tag reconocido desbalanceado ('</b>' pegado desde Word, '<b'/'<br' sin
+    cerrar) o un '&' en cualquier campo hacía fallar doc.build() → HTTP 500 →
+    'No se pudo generar el PDF'. Todo campo de usuario debe escaparse.
+    """
+    visita = dict(
+        _VISITA_COMPLETA,
+        unidad_proyecto={"nombre": "El Piloto </b> & anexo"},
+        estado="en-progreso <br malformado",
+        colaboradores=[{"nombre": "Ana <b García"}],
+    )
+    requerimiento = dict(
+        _REQUERIMIENTO_COMPLETO,
+        descripcion="Árbol caído </b> & rama <b suelta",
+        observaciones="Avance </i> pendiente",
+        solicitante=dict(
+            _REQUERIMIENTO_COMPLETO["solicitante"],
+            nombre_completo="María <b López",
+            direccion="Calle 10 </b> & 5-23",
+        ),
+        estado="en-progreso",
+        prioridad="alta",
+    )
+    pdf = generar_reporte_visita(visita, [requerimiento])
+    assert pdf[:4] == b"%PDF"
+    assert len(pdf) > 500
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Test 2 — PDF sin requerimientos (visita vacía)
 # ──────────────────────────────────────────────────────────────────────────────
 
