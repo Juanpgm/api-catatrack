@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import time
@@ -31,6 +32,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from pydantic import BaseModel, Field, ValidationError
 
 from firebase_admin import firestore
+
+logger = logging.getLogger(__name__)
 
 from app.auth_system.dependencies import get_current_user
 from app.classification.classifier import clasificar_centros_gestores
@@ -858,7 +861,7 @@ def _calcular_estadisticas() -> dict:
 # avanzadas/requerimientos. Mismo patrón que el cache de catálogos:
 # configurable por env var para debugging o para aliviar presión sobre
 # Firestore.
-_AVANZADAS_ESTADISTICAS_TTL_SECONDS = float(os.getenv("AVANZADAS_ESTADISTICAS_TTL_SECONDS", "60"))
+_AVANZADAS_ESTADISTICAS_TTL_SECONDS = float(os.getenv("AVANZADAS_ESTADISTICAS_TTL_SECONDS", "600"))
 
 
 @dataclass
@@ -890,7 +893,19 @@ def _obtener_estadisticas_cacheado() -> dict:
     if entry is not None and entry.expires_at > now:
         return copy.deepcopy(entry.value)
 
-    value = _calcular_estadisticas()
+    try:
+        value = _calcular_estadisticas()
+    except Exception as exc:
+        # Firestore puede rechazar con RESOURCE_EXHAUSTED (cuota de lecturas
+        # diaria agotada) u otro fallo transitorio. Si teníamos un valor
+        # cacheado (aunque haya vencido), lo servimos ANTES que romper el
+        # dashboard con un 500: datos algo viejos > pantalla en blanco. Sólo
+        # propagamos cuando no hay nada previo que mostrar (instancia fría).
+        if entry is not None:
+            logger.warning("estadísticas: sirviendo cache vencido por fallo al recalcular: %s", exc)
+            return copy.deepcopy(entry.value)
+        raise
+
     _estadisticas_cache = _EstadisticasCacheEntry(
         value=value, expires_at=now + _AVANZADAS_ESTADISTICAS_TTL_SECONDS
     )
@@ -1026,7 +1041,7 @@ def _calcular_geo() -> dict:
 
 # TTL (segundos) del cache en memoria de los puntos georreferenciados.
 # Mismo patrón que el cache de estadísticas: configurable por env var.
-_AVANZADAS_GEO_TTL_SECONDS = float(os.getenv("AVANZADAS_GEO_TTL_SECONDS", "60"))
+_AVANZADAS_GEO_TTL_SECONDS = float(os.getenv("AVANZADAS_GEO_TTL_SECONDS", "600"))
 
 
 @dataclass
@@ -1053,7 +1068,17 @@ def _obtener_geo_cacheado() -> dict:
     if entry is not None and entry.expires_at > now:
         return copy.deepcopy(entry.value)
 
-    value = _calcular_geo()
+    try:
+        value = _calcular_geo()
+    except Exception as exc:
+        # Ver nota en _obtener_estadisticas_cacheado: servimos el último mapa
+        # cacheado (aunque venció) si Firestore falla —p. ej. cuota de
+        # lecturas agotada— en vez de romper el mapa con un 500.
+        if entry is not None:
+            logger.warning("geo: sirviendo cache vencido por fallo al recalcular: %s", exc)
+            return copy.deepcopy(entry.value)
+        raise
+
     _geo_cache = _GeoCacheEntry(value=value, expires_at=now + _AVANZADAS_GEO_TTL_SECONDS)
     return copy.deepcopy(value)
 

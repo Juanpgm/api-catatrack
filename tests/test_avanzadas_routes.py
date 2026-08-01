@@ -756,6 +756,61 @@ def test_patch_avanzada_validacion_falla_no_modifica_documento(client, fake_db):
     assert doc["fecha"] == "2026-07-10"
 
 
+def test_estadisticas_sirve_cache_vencido_si_firestore_falla(monkeypatch):
+    """Cuota de Firestore agotada (RESOURCE_EXHAUSTED) no debe romper el
+    dashboard si ya había datos: se sirve el último valor cacheado aunque
+    haya vencido, en vez de propagar un 500 y dejar la pantalla en blanco."""
+    avanzadas_routes._invalidar_cache_estadisticas()
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(avanzadas_routes.time, "monotonic", lambda: fake_now["t"])
+    monkeypatch.setattr(avanzadas_routes, "_calcular_estadisticas", lambda: {"total_avanzadas": 7})
+
+    assert avanzadas_routes._obtener_estadisticas_cacheado() == {"total_avanzadas": 7}
+
+    # El cache vence y el recálculo revienta como lo haría la cuota de Firestore.
+    fake_now["t"] += 10_000
+
+    def _boom():
+        raise RuntimeError("429 Quota exceeded. ResourceExhausted")
+
+    monkeypatch.setattr(avanzadas_routes, "_calcular_estadisticas", _boom)
+    assert avanzadas_routes._obtener_estadisticas_cacheado() == {"total_avanzadas": 7}
+    avanzadas_routes._invalidar_cache_estadisticas()
+
+
+def test_estadisticas_propaga_error_si_no_hay_cache_previo(monkeypatch):
+    """Instancia fría con cuota agotada y sin nada que servir: el error sí
+    sube (no hay dato viejo con qué degradar)."""
+    avanzadas_routes._invalidar_cache_estadisticas()
+
+    def _boom():
+        raise RuntimeError("429 Quota exceeded. ResourceExhausted")
+
+    monkeypatch.setattr(avanzadas_routes, "_calcular_estadisticas", _boom)
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        avanzadas_routes._obtener_estadisticas_cacheado()
+
+
+def test_geo_sirve_cache_vencido_si_firestore_falla(monkeypatch):
+    """Igual que estadísticas: el mapa sirve el último valor cacheado si el
+    recálculo falla por cuota, en vez de romperse."""
+    avanzadas_routes._invalidar_cache_geo()
+    fake_now = {"t": 2000.0}
+    monkeypatch.setattr(avanzadas_routes.time, "monotonic", lambda: fake_now["t"])
+    monkeypatch.setattr(avanzadas_routes, "_calcular_geo", lambda: {"puntos": [1]})
+
+    assert avanzadas_routes._obtener_geo_cacheado() == {"puntos": [1]}
+
+    fake_now["t"] += 10_000
+
+    def _boom():
+        raise RuntimeError("429 Quota exceeded. ResourceExhausted")
+
+    monkeypatch.setattr(avanzadas_routes, "_calcular_geo", _boom)
+    assert avanzadas_routes._obtener_geo_cacheado() == {"puntos": [1]}
+    avanzadas_routes._invalidar_cache_geo()
+
+
 def test_patch_avanzada_invalida_caches_de_estadisticas_y_geo(client, fake_db):
     _post_avanzada(client, _valid_datos(client_id="cid-patch-cache"))
     client.get("/avanzadas/estadisticas")

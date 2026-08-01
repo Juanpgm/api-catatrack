@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ from app.routes import avanzadas_routes
 # Módulo unificado de S3 (single source: credenciales, bucket, key format,
 # upload/delete/list/presign).
 from app.utils import s3_storage
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jornadas", tags=["Jornadas Integrales"])
 
@@ -395,7 +398,7 @@ def _calcular_estadisticas_jornadas() -> dict:
 # Jornadas Integrales. Mismo patrón que ``avanzadas_routes``:
 # configurable por env var para debugging o para aliviar presión sobre
 # Firestore.
-JORNADAS_ESTADISTICAS_TTL_SECONDS = float(os.getenv("JORNADAS_ESTADISTICAS_TTL_SECONDS", "60"))
+JORNADAS_ESTADISTICAS_TTL_SECONDS = float(os.getenv("JORNADAS_ESTADISTICAS_TTL_SECONDS", "600"))
 
 
 @dataclass
@@ -425,7 +428,19 @@ def _obtener_estadisticas_jornadas_cacheado() -> dict:
     if entry is not None and entry.expires_at > now:
         return copy.deepcopy(entry.value)
 
-    value = _calcular_estadisticas_jornadas()
+    try:
+        value = _calcular_estadisticas_jornadas()
+    except Exception as exc:
+        # Firestore puede rechazar con RESOURCE_EXHAUSTED (cuota de lecturas
+        # agotada) u otro fallo transitorio. Si teníamos un valor cacheado
+        # (aunque venció), lo servimos ANTES que romper el dashboard con un
+        # 500: datos algo viejos > pantalla en blanco. Sólo propagamos cuando
+        # no hay nada previo (instancia fría).
+        if entry is not None:
+            logger.warning("estadísticas jornadas: sirviendo cache vencido por fallo al recalcular: %s", exc)
+            return copy.deepcopy(entry.value)
+        raise
+
     _jornadas_estadisticas_cache = _JornadasEstadisticasCacheEntry(
         value=value, expires_at=now + JORNADAS_ESTADISTICAS_TTL_SECONDS
     )
