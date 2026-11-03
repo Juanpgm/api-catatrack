@@ -1,3 +1,7 @@
+# Indice CPU-only de PyTorch: evita descargar ~1.5 GB de librerias CUDA en el build.
+# pip prefiere la wheel "torch==X+cpu" de este indice sobre la de PyPI (con CUDA).
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # FastAPI y dependencias
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
@@ -27,7 +31,7 @@ faster-whisper>=1.0.0
 # Clasificador local de centros gestores (SLM gratuito multilingüe)
 # Rama de reglas léxicas funciona sin estas libs; rama de embeddings las requiere.
 sentence-transformers>=2.7.0
-# torch CPU (Railway / Linux x86_64). En local Windows, pip resolverá la wheel CPU adecuada.
+# torch CPU (Railway / Linux x86_64), resuelto desde el indice CPU declarado arriba.
 torch>=2.1.0,<3
 
 # Generación de PDF
