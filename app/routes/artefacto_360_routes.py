@@ -2078,44 +2078,25 @@ async def post_registrar_requerimiento(
         # Crear ID único para el documento
         doc_id = f"{vid}_{rid}"
 
-        # Clasificación automática: siempre se ejecuta para derivar
-        # `tipo_requerimiento` y `acciones_por_organismo`. Los `organismos_encargados`
-        # solo se sobreescriben cuando el cliente NO envió ninguno.
-        tipo_requerimiento_input = (tipo_requerimiento or "").strip()
-        tipo_requerimiento_final = tipo_requerimiento_input
-        tipo_requerimiento_origen = "cliente" if tipo_requerimiento_input else "auto"
-        acciones_por_organismo: Dict[str, List[str]] = {}
-        try:
-            clasif = clasificar_centros_gestores(
-                requerimiento=requerimiento,
-                tipo_requerimiento=tipo_requerimiento_input or None,
-                observaciones=observaciones,
-                transcripciones=transcripciones if transcripciones else None,
-            )
-            clasificacion_meta = {
-                "metodo": clasif.get("metodo"),
-                "confianza": clasif.get("confianza"),
-                "matches": clasif.get("matches", []),
-            }
-            acciones_por_organismo = dict(clasif.get("acciones_por_organismo", {}) or {})
-            if not tipo_requerimiento_final:
-                tipo_requerimiento_final = clasif.get("tipo_requerimiento") or "Otros"
-            if not organismos_list:
-                organismos_list = list(clasif.get("centros_gestores", []) or [])
-                organismos_origen = "auto"
-            print(
-                f"🧠 Clasificación: organismos={organismos_list} "
-                f"tipo='{tipo_requerimiento_final}' (origen_tipo={tipo_requerimiento_origen}) "
-                f"(método={clasificacion_meta['metodo']}, conf={clasificacion_meta['confianza']})"
-            )
-        except Exception as _e_clasif:
-            print(f"⚠️ Clasificador falló: {_e_clasif}")
-            clasificacion_meta = {"metodo": "error", "confianza": 0.0, "matches": []}
-            if not organismos_list:
-                organismos_origen = "auto"
-            if not tipo_requerimiento_final:
-                tipo_requerimiento_final = "Otros"
+        # Clasificación automática desactivada.
+        # Se conservan únicamente los datos seleccionados por el usuario.
 
+        tipo_requerimiento_input = (tipo_requerimiento or "").strip()
+        tipo_requerimiento_final = tipo_requerimiento_input or "Otros"
+
+        tipo_requerimiento_origen = (
+            "cliente" if tipo_requerimiento_input else "sin_asignar"
+        )
+
+        acciones_por_organismo: Dict[str, List[str]] = {}
+
+        clasificacion_meta = None
+
+        if organismos_list:
+            organismos_origen = "cliente"
+        else:
+            organismos_origen = "sin_asignar"
+            
         # Preparar datos para guardar en Firebase
         requerimiento_data = {
             "vid": vid,
