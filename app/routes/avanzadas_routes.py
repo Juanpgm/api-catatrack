@@ -36,7 +36,6 @@ from firebase_admin import firestore
 logger = logging.getLogger(__name__)
 
 from app.auth_system.dependencies import get_current_user
-from app.classification.classifier import clasificar_centros_gestores
 from app.data.avanzadas_catalogos import (
     CATEGORIAS_DEFAULT,
     DEPENDENCIAS_DEFAULT,
