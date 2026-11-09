@@ -1868,30 +1868,16 @@ async def clasificar_requerimiento_avanzada(
     payload: ClasificarRequerimientoIn,
     current_user: dict = Depends(get_current_user),
 ):
-    """Sugiere los organismos/entidades responsables de un requerimiento a
-    partir de su texto, delegando en el clasificador de centros gestores
-    (``app/classification/classifier.py``). Las siglas devueltas por el
-    clasificador se normalizan a entradas completas de
-    ``DEPENDENCIAS_DEFAULT`` ("SIGLA - Nombre completo"); las que no se
-    puedan mapear se descartan."""
-    resultado = clasificar_centros_gestores(
-        requerimiento=payload.texto,
-        tipo_requerimiento=payload.tipo_requerimiento,
-        observaciones=payload.observaciones,
-    )
-
-    organismos_sugeridos: List[str] = []
-    for sigla in resultado["centros_gestores"]:
-        organismo = _normalizar_organismo(sigla)
-        if organismo and organismo not in organismos_sugeridos:
-            organismos_sugeridos.append(organismo)
-
+    """
+    Clasificación automática desactivada.
+    Se mantiene el endpoint por compatibilidad con el frontend.
+    """
     return ClasificarRequerimientoOut(
-        organismos_sugeridos=organismos_sugeridos,
-        confianza=resultado["confianza"],
-        metodo=resultado["metodo"],
-        tipo_requerimiento=resultado["tipo_requerimiento"],
-        acciones_por_organismo=resultado["acciones_por_organismo"],
+        organismos_sugeridos=[],
+        confianza=0.0,
+        metodo="desactivado",
+        tipo_requerimiento="Otros",
+        acciones_por_organismo={},
     )
 
 
