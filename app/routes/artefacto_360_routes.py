@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field
 import httpx
 from shapely.geometry import shape, Point
 from shapely.ops import nearest_points
-from faster_whisper import WhisperModel
 
 # Importar configuración de Firebase y S3/Storage
 from app.firebase_config import db
@@ -38,10 +37,15 @@ def _get_whisper_model():
     """Carga el modelo Whisper una sola vez (singleton)."""
     global _whisper_model
     if _whisper_model is None:
-        model_size = os.getenv("WHISPER_MODEL_SIZE", "base")
-        print(f"🔄 Cargando modelo faster-whisper '{model_size}'...")
-        _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        print(f"✅ Modelo faster-whisper '{model_size}' cargado")
+        try:
+            from faster_whisper import WhisperModel
+            model_size = os.getenv("WHISPER_MODEL_SIZE", "base")
+            print(f"🔄 Cargando modelo faster-whisper '{model_size}'...")
+            _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            print(f"✅ Modelo faster-whisper '{model_size}' cargado")
+        except Exception as e:
+            logger.warning(f"⚠️ faster_whisper no está disponible: {e}")
+            return None
     return _whisper_model
 
 
@@ -54,6 +58,9 @@ def _transcribir_audio_whisper(audio_bytes: bytes, filename: str, language: str 
 
     try:
         model = _get_whisper_model()
+        if model is None:
+            logger.warning("⚠️ Whisper no disponible, omitiendo transcripción")
+            return None
 
         # faster-whisper necesita un archivo en disco
         ext = os.path.splitext(filename)[1] or ".wav"

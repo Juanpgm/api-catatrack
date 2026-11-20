@@ -1840,6 +1840,13 @@ async def descargar_reporte_pdf_avanzada(
         avanzada_dict = avanzada_out.model_dump(exclude={"requerimientos"})
         requerimientos = [r.model_dump() for r in avanzada_out.requerimientos]
 
+        # Presignar foto_equipo_url para que pueda descargarse desde el bucket privado de S3
+        foto_equipo_url = avanzada_dict.get("foto_equipo_url")
+        if foto_equipo_url:
+            urls_presignadas = _presignar_fotos_urls([foto_equipo_url])
+            if urls_presignadas:
+                avanzada_dict["foto_equipo_url"] = urls_presignadas[0]
+
         pdf_bytes = generar_reporte_avanzada(avanzada_dict, requerimientos)
 
         filename = f"informe-avanzada-{client_id}.pdf"

@@ -6,16 +6,11 @@ Algoritmo:
     1. Normaliza el texto y aplica reglas léxicas (`rules.aplicar_reglas`).
     2. Si hay candidatos con `score >= UMBRAL_REGLAS`, devuelve los
        responsables únicos de esas filas (método = "reglas").
-    3. Si no, intenta embeddings semánticos
-       (`embeddings.calcular_similitudes`) y toma los top-k cuya
-       similitud >= `UMBRAL_EMBEDDINGS`. Método = "embeddings".
-    4. Si embeddings no está disponible o no hay candidatos válidos,
-       devuelve lista vacía con método = "ninguno". El endpoint que
-       consuma esto debe decidir si exigir input manual o devolver
-       una lista vacía al cliente.
+    3. Si no hay candidatos válidos, devuelve lista vacía con método = "ninguno".
+       El endpoint que consuma esto debe decidir si exigir input manual o
+       devolver una lista vacía al cliente.
 
-La función nunca lanza excepciones por fallas del modelo: degrada
-gracefully a reglas / a lista vacía.
+La función nunca lanza excepciones: degrada gracefully a lista vacía.
 """
 
 from __future__ import annotations
@@ -23,12 +18,10 @@ from __future__ import annotations
 import os
 from typing import Dict, Iterable, List, Optional
 
-from . import embeddings as _emb
 from .rules import aplicar_reglas
 from .taxonomia import TAXONOMIA, mapear_tipo_requerimiento_front
 
 UMBRAL_REGLAS = int(os.getenv("CLASSIFIER_RULES_MIN_HITS", "1"))
-UMBRAL_EMBEDDINGS = float(os.getenv("CLASSIFIER_EMB_THRESHOLD", "0.45"))
 
 
 def _unir_textos(*textos: Optional[str]) -> str:
@@ -101,7 +94,7 @@ def clasificar_centros_gestores(
         {
             "centros_gestores": ["DAGMA", "UAESP"],
             "confianza": 0.82,
-            "metodo": "reglas" | "embeddings" | "ninguno",
+            "metodo": "reglas" | "ninguno",
             "matches": [
                 {"categoria", "subcategoria", "condicion", "accion",
                  "responsables", "score", "hits"},
@@ -152,41 +145,7 @@ def clasificar_centros_gestores(
             "acciones_por_organismo": derivado["acciones_por_organismo"],
         }
 
-    # ---------- 2) Embeddings ----------
-    if _emb.esta_disponible() and texto:
-        try:
-            sims = _emb.calcular_similitudes(texto, top_k=max(top_k, 5))
-        except Exception as e:
-            print(f"⚠️ Embeddings fallaron, devolviendo vacío: {e}")
-            sims = []
-
-        sims_validas = [(i, s) for i, s in sims if s >= UMBRAL_EMBEDDINGS][:top_k]
-        if sims_validas:
-            filas = [TAXONOMIA[i] for i, _ in sims_validas]
-            matches = [
-                {
-                    "categoria": TAXONOMIA[i]["categoria"],
-                    "subcategoria": TAXONOMIA[i]["subcategoria"],
-                    "condicion": TAXONOMIA[i]["condicion"],
-                    "accion": TAXONOMIA[i].get("accion", ""),
-                    "responsables": TAXONOMIA[i]["responsables"],
-                    "score": round(s, 3),
-                    "hits": [],
-                }
-                for i, s in sims_validas
-            ]
-            max_sim = sims_validas[0][1]
-            derivado = _derivar_tipo_y_acciones(matches, filas)
-            return {
-                "centros_gestores": _responsables_unicos(filas),
-                "confianza": round(float(max_sim), 3),
-                "metodo": "embeddings",
-                "matches": matches,
-                "tipo_requerimiento": derivado["tipo_requerimiento"],
-                "acciones_por_organismo": derivado["acciones_por_organismo"],
-            }
-
-    # ---------- 3) Sin clasificación ----------
+    # ---------- 2) Sin clasificación por reglas ----------
     return {
         "centros_gestores": [],
         "confianza": 0.0,

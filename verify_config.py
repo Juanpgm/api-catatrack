@@ -6,6 +6,14 @@ import sys
 import json
 from pathlib import Path
 
+# Forzar codificación UTF-8 en stdout/stderr para compatibilidad con Windows
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 def print_section(title, emoji="📋"):
     """Imprime una sección"""
     print(f"\n{emoji} {title}")

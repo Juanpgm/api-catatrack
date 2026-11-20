@@ -27,7 +27,7 @@ from xml.sax.saxutils import escape as _xml_escape
 
 import httpx
 import reportlab
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -258,6 +258,7 @@ def _descargar_y_normalizar_foto(url: str) -> Optional[bytes]:
         )
         resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content))
+        img = ImageOps.exif_transpose(img)
         img = img.convert("RGB")
         if img.width > _MAX_FOTO_ANCHO_PX:
             ratio = _MAX_FOTO_ANCHO_PX / img.width

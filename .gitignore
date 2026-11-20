@@ -48,3 +48,6 @@ venv.bak/
 # OS
 .DS_Store
 Thumbs.db
+# Entornos y archivos locales de prueba
+.venv-pruebas/
+/env
