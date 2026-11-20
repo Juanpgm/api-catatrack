@@ -92,7 +92,7 @@ _MAX_FOTO_ANCHO_PX = 900
 # fotos cada uno -- secuencial, eso significaba 30-40s de bloqueo sincrónico
 # por request, tiempo suficiente para expirar el proxy/gateway delante de la
 # API y que el frontend viera un error genérico de red.
-_MAX_DESCARGAS_CONCURRENTES = 4
+_MAX_DESCARGAS_CONCURRENTES = 20
 
 _MAPA_ANCHO_PX = 900
 _MAPA_ALTO_PX = 620
@@ -243,74 +243,31 @@ def _url_imagen_descargable(url: str) -> str:
 
 
 def _descargar_y_normalizar_foto(url: str) -> Optional[bytes]:
-    """Descarga una foto y la normaliza a JPEG acotado en ancho."""
+    """Descarga una foto y la normaliza a JPEG acotado en ancho, para que el
+    PDF no herede el peso original de fotos de celular. Retorna None ante
+    cualquier falla (red, URL rota, contenido no-imagen) — el llamador debe
+    tolerar la ausencia en vez de romper el reporte completo.
+    """
     if not url:
         return None
-
-    imagenes_temporales = []
-
     try:
         destino = _url_imagen_descargable(url)
-
-        with httpx.get(
-            destino,
-            timeout=_HTTP_TIMEOUT,
-            follow_redirects=True,
+        resp = httpx.get(
+            destino, timeout=_HTTP_TIMEOUT, follow_redirects=True,
             headers={"User-Agent": _OSM_USER_AGENT},
-        ) as resp:
-            resp.raise_for_status()
-
-            with io.BytesIO(resp.content) as fuente:
-                with Image.open(fuente) as original:
-                    transpuesta = ImageOps.exif_transpose(original)
-
-                    if transpuesta is not original:
-                        imagenes_temporales.append(transpuesta)
-
-                    rgb = transpuesta.convert("RGB")
-
-                    if rgb is not original and rgb is not transpuesta:
-                        imagenes_temporales.append(rgb)
-
-                    imagen_final = rgb
-
-                    if rgb.width > _MAX_FOTO_ANCHO_PX:
-                        ratio = _MAX_FOTO_ANCHO_PX / rgb.width
-
-                        redimensionada = rgb.resize((
-                            _MAX_FOTO_ANCHO_PX,
-                            max(1, int(rgb.height * ratio)),
-                        ))
-
-                        if all(
-                            redimensionada is not imagen
-                            for imagen in (original, transpuesta, rgb)
-                        ):
-                            imagenes_temporales.append(redimensionada)
-
-                        imagen_final = redimensionada
-
-                    with io.BytesIO() as buf:
-                        imagen_final.save(
-                            buf,
-                            format="JPEG",
-                            quality=82,
-                        )
-                        return buf.getvalue()
-
+        )
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content))
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+        if img.width > _MAX_FOTO_ANCHO_PX:
+            ratio = _MAX_FOTO_ANCHO_PX / img.width
+            img = img.resize((_MAX_FOTO_ANCHO_PX, max(1, int(img.height * ratio))))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=82)
+        return buf.getvalue()
     except Exception:
         return None
-
-    finally:
-        cerradas = set()
-
-        for img in reversed(imagenes_temporales):
-            if id(img) not in cerradas:
-                cerradas.add(id(img))
-                try:
-                    img.close()
-                except Exception:
-                    pass
 
 
 def _descargar_fotos_concurrente(urls: List[str]) -> Dict[str, bytes]:
@@ -331,9 +288,8 @@ def _descargar_fotos_concurrente(urls: List[str]) -> Dict[str, bytes]:
 
 def _foto_flowable(foto_bytes: bytes, max_w_cm: float, max_h_cm: float) -> Optional[RLImage]:
     try:
-        # Open image solely to get dimensions, then close immediately.
-        with Image.open(io.BytesIO(foto_bytes)) as img:
-            w_px, h_px = img.size
+        img = Image.open(io.BytesIO(foto_bytes))
+        w_px, h_px = img.size
         if not w_px or not h_px:
             return None
         ratio = min((max_w_cm * cm) / w_px, (max_h_cm * cm) / h_px)
