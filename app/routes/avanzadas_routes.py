@@ -47,7 +47,7 @@ from app.firebase_config import db
 # upload/delete/list/presign).
 from app.utils import s3_storage
 from app.utils.s3_storage import get_s3_client
-from app.utils.avanzada_pdf_generator import generar_reporte_avanzada
+from app.utils.avanzada_pdf_generator import generar_reporte_avanzada, _log_memoria
 
 router = APIRouter(prefix="/avanzadas", tags=["Avanzadas Diagnósticas"])
 
@@ -1848,6 +1848,7 @@ async def descargar_reporte_pdf_avanzada(
                 avanzada_dict["foto_equipo_url"] = urls_presignadas[0]
 
         pdf_bytes = generar_reporte_avanzada(avanzada_dict, requerimientos)
+        _log_memoria("despues_generar_pdf", client_id)
 
         filename = f"informe-avanzada-{client_id}.pdf"
         return Response(

@@ -33,6 +33,29 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
+import logging
+logger = logging.getLogger(__name__)
+
+def _leer_memoria_proc() -> tuple[int, int]:
+    """Lee VmRSS y VmHWM del archivo /proc/self/status.
+    Devuelve una tupla (rss_kb, hwm_kb). Si el archivo no existe (p.ej. Windows),
+    devuelve (0, 0)."""
+    try:
+        with open('/proc/self/status', 'r') as f:
+            rss = hwm = 0
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    rss = int(line.split()[1])
+                elif line.startswith('VmHWM:'):
+                    hwm = int(line.split()[1])
+            return rss, hwm
+    except Exception:
+        return 0, 0
+
+def _log_memoria(etapa: str, reporte_id: str) -> None:
+    """Registra los valores de memoria con el prefijo [PDF-MEMORIA]."""
+    rss, hwm = _leer_memoria_proc()
+    logger.info(f"[PDF-MEMORIA] {etapa} - reporte_id={reporte_id} - VmRSS={rss}kB VmHWM={hwm}kB")
 from reportlab.platypus import (
     HRFlowable,
     Image as RLImage,
@@ -510,6 +533,9 @@ def generar_reporte_avanzada(
         Lista de requerimientos asociados, ya ordenados por ``req_index``.
     """
     buffer = io.BytesIO()
+    # Identificador del reporte para logging
+    reporte_id = avanzada.get('client_id') or avanzada.get('nombre_avanzada', 'sin-id')
+    _log_memoria('inicio', reporte_id)
     doc = SimpleDocTemplate(
         buffer, pagesize=A4,
         rightMargin=1.4 * cm, leftMargin=1.4 * cm, topMargin=1.3 * cm, bottomMargin=1.3 * cm,
@@ -533,6 +559,7 @@ def generar_reporte_avanzada(
     ]
     todas_urls_fotos = ([foto_equipo_url] if foto_equipo_url else []) + urls_fotos_requerimientos
     fotos_cache = _descargar_fotos_concurrente(todas_urls_fotos)
+    _log_memoria('despues_fotos', reporte_id)
 
     # ── Encabezado ───────────────────────────────────────────────────────────
     story.append(Paragraph("INFORME DE AVANZADA", estilos["titulo"]))
@@ -726,6 +753,7 @@ def generar_reporte_avanzada(
 
     # ── Mapa general de recorrido ─────────────────────────────────────────────
     mapa_png = _generar_mapa_recorrido(puntos_mapa)
+    _log_memoria('despues_mapa', reporte_id)
     if mapa_png:
         story.append(PageBreak())
         story.append(Paragraph("MAPA GENERAL DE RECORRIDO", estilos["seccion"]))
@@ -789,5 +817,10 @@ def generar_reporte_avanzada(
     story.append(Paragraph(f"Informe generado automáticamente por CataTrack · {now_str}", estilos["pie"]))
     story.append(Paragraph("Alcaldía de Santiago de Cali — Todos los derechos reservados", estilos["pie"]))
 
+    _log_memoria('antes_build', reporte_id)
     doc.build(story)
-    return buffer.getvalue()
+    _log_memoria('despues_build', reporte_id)
+
+    pdf_bytes = buffer.getvalue()
+    _log_memoria('listo_pdf', reporte_id)
+    return pdf_bytes
